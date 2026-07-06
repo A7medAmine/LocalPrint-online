@@ -1,141 +1,22 @@
-import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
-import crypto from 'crypto';
-import { fileURLToPath } from 'url';
+import { createClient } from '@supabase/supabase-js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
 
-const dbPath = path.join(__dirname, 'database.sqlite');
-let db = new Database(dbPath);
-
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY,
-    customerName TEXT DEFAULT '',
-    phoneNumber TEXT DEFAULT '',
-    notes TEXT DEFAULT '',
-    fileName TEXT,
-    fileType TEXT,
-    fileSize INTEGER,
-    uploadDate TEXT,
-    status TEXT DEFAULT 'PENDING',
-    serverFileName TEXT,
-    pageCount INTEGER,
-    colorMode TEXT DEFAULT 'color',
-    copies INTEGER DEFAULT 1,
-    paperType TEXT DEFAULT 'normal',
-    source TEXT DEFAULT 'upload',
-    customerEmail TEXT DEFAULT ''
-  );
-
-  CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS paper_types (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    nameAr TEXT NOT NULL DEFAULT '',
-    colorPerPage REAL NOT NULL DEFAULT 30,
-    blackWhitePerPage REAL NOT NULL DEFAULT 15,
-    sortOrder INTEGER NOT NULL DEFAULT 0
-  );
-
-  CREATE TABLE IF NOT EXISTS discount_rules (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    discount_type TEXT NOT NULL,
-    discount_value REAL NOT NULL,
-    condition_type TEXT NOT NULL,
-    threshold INTEGER NOT NULL,
-    max_discount_cap REAL,
-    priority INTEGER DEFAULT 0,
-    is_active INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS gmail_account (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    gmail_email TEXT DEFAULT '',
-    access_token TEXT DEFAULT '',
-    refresh_token TEXT DEFAULT '',
-    token_expiry TEXT,
-    connected_at TEXT,
-    is_active INTEGER DEFAULT 0
-  );
-
-  CREATE TABLE IF NOT EXISTS processed_emails (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    gmail_message_id TEXT UNIQUE NOT NULL,
-    processed_at TEXT DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS gmail_pending (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    gmail_message_id TEXT UNIQUE NOT NULL,
-    email_from TEXT,
-    email_address TEXT,
-    subject TEXT,
-    body_preview TEXT,
-    attachment_meta TEXT DEFAULT '[]',
-    received_at TEXT,
-    fetched_at TEXT DEFAULT CURRENT_TIMESTAMP
-  );
-`);
-
-// Auto-create the singleton gmail_account row if it doesn't exist
-const gmailRow = db.prepare('SELECT id FROM gmail_account WHERE id = 1').get();
-if (!gmailRow) {
-  db.prepare('INSERT INTO gmail_account (id) VALUES (1)').run();
+if (!supabaseUrl || !supabaseKey) {
+  throw new Error('SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables are required');
 }
 
-// Migrations for columns added after initial schema
-try { db.exec(`ALTER TABLE jobs ADD COLUMN customerEmail TEXT DEFAULT ''`); } catch (e) {}
-try { db.exec(`ALTER TABLE jobs ADD COLUMN source TEXT DEFAULT 'upload'`); } catch (e) {}
-try { db.exec(`ALTER TABLE gmail_pending ADD COLUMN discarded_at TEXT`); } catch (e) {}
-try { db.exec(`ALTER TABLE jobs ADD COLUMN paymentStatus TEXT DEFAULT 'UNPAID'`); } catch (e) {}
-try { db.exec(`ALTER TABLE jobs ADD COLUMN paymentAmount REAL`); } catch (e) {}
-try { db.exec(`ALTER TABLE jobs ADD COLUMN paymentDate TEXT`); } catch (e) {}
-
-// Seed default paper types if table is empty
-const paperTypeCount = db.prepare('SELECT COUNT(*) AS count FROM paper_types').get();
-if (paperTypeCount.count === 0) {
-  const insert = db.prepare('INSERT INTO paper_types (id, name, nameAr, colorPerPage, blackWhitePerPage, sortOrder) VALUES (?, ?, ?, ?, ?, ?)');
-  insert.run('normal', 'Normal', 'عادي', 30, 15, 0);
-  insert.run('glossy', 'Glossy', 'لامع', 50, 50, 1);
-  insert.run('cardboard', 'Cardboard', 'ورق مقوى', 40, 40, 2);
-}
-
-// Migrate legacy paperTypes from settings key-value if paper_types table has defaults only
-const legacyPaperTypes = (() => {
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'paperTypes'").get();
-  if (!row) return null;
-  try { return JSON.parse(row.value); } catch { return null; }
-})();
-if (legacyPaperTypes && Array.isArray(legacyPaperTypes) && legacyPaperTypes.length > 0) {
-  const currentCount = db.prepare('SELECT COUNT(*) AS count FROM paper_types').get();
-  if (currentCount.count <= 3) {
-    const insert = db.prepare('INSERT OR REPLACE INTO paper_types (id, name, nameAr, colorPerPage, blackWhitePerPage, sortOrder) VALUES (?, ?, ?, ?, ?, ?)');
-    legacyPaperTypes.forEach((pt, idx) => {
-      insert.run(pt.id, pt.name, pt.nameAr || pt.name, pt.colorPerPage, pt.blackWhitePerPage, idx);
-    });
-  }
-  db.prepare("DELETE FROM settings WHERE key = 'paperTypes'").run();
-}
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 /**
  * Settings Helpers
  */
-export const getSettings = () => {
-  const rows = db.prepare('SELECT * FROM settings').all();
+export const getSettings = async () => {
+  const { data: rows, error } = await supabase.from('settings').select('*');
+  if (error) throw error;
   const settings = {};
-  rows.forEach(row => {
+  (rows || []).forEach(row => {
     try {
       settings[row.key] = JSON.parse(row.value);
     } catch (e) {
@@ -145,232 +26,133 @@ export const getSettings = () => {
   return settings;
 };
 
-export const updateSetting = (key, value) => {
+export const updateSetting = async (key, value) => {
   const serializedValue = typeof value === 'object' ? JSON.stringify(value) : value;
-  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, serializedValue);
+  const { error } = await supabase.from('settings').upsert(
+    { key, value: serializedValue },
+    { onConflict: 'key' }
+  );
+  if (error) throw error;
 };
 
 /**
  * Paper Types Helpers
  */
-export const getPaperTypes = () => {
-  return db.prepare('SELECT * FROM paper_types ORDER BY sortOrder ASC').all();
+export const getPaperTypes = async () => {
+  const { data, error } = await supabase.from('paper_types').select('*').order('sortOrder', { ascending: true });
+  if (error) throw error;
+  return data || [];
 };
 
-export const replaceAllPaperTypes = (types) => {
-  const tx = db.transaction(() => {
-    db.prepare('DELETE FROM paper_types').run();
-    const insert = db.prepare('INSERT INTO paper_types (id, name, nameAr, colorPerPage, blackWhitePerPage, sortOrder) VALUES (?, ?, ?, ?, ?, ?)');
-    types.forEach((pt, idx) => {
-      insert.run(pt.id, pt.name, pt.nameAr || pt.name, pt.colorPerPage, pt.blackWhitePerPage, idx);
-    });
-  });
-  tx();
+export const replaceAllPaperTypes = async (types) => {
+  const { error: delError } = await supabase.from('paper_types').delete().neq('id', 'nonexistent');
+  if (delError && delError.code !== 'PGRST116') throw delError;
+  if (types.length === 0) return;
+  const rows = types.map((pt, idx) => ({
+    id: pt.id,
+    name: pt.name,
+    nameAr: pt.nameAr || pt.name,
+    colorPerPage: pt.colorPerPage,
+    blackWhitePerPage: pt.blackWhitePerPage,
+    sortOrder: idx,
+  }));
+  const { error } = await supabase.from('paper_types').insert(rows);
+  if (error) throw error;
 };
 
-export const createPaperType = (pt) => {
-  const maxOrder = db.prepare('SELECT COALESCE(MAX(sortOrder), -1) AS maxOrder FROM paper_types').get();
-  db.prepare('INSERT INTO paper_types (id, name, nameAr, colorPerPage, blackWhitePerPage, sortOrder) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(pt.id, pt.name, pt.nameAr || pt.name, pt.colorPerPage, pt.blackWhitePerPage, maxOrder.maxOrder + 1);
-  return db.prepare('SELECT * FROM paper_types WHERE id = ?').get(pt.id);
+export const createPaperType = async (pt) => {
+  const { data: maxOrderData } = await supabase.from('paper_types').select('sortOrder').order('sortOrder', { ascending: false }).limit(1);
+  const maxOrder = maxOrderData?.[0]?.sortOrder ?? -1;
+  const newPt = {
+    id: pt.id,
+    name: pt.name,
+    nameAr: pt.nameAr || pt.name,
+    colorPerPage: pt.colorPerPage,
+    blackWhitePerPage: pt.blackWhitePerPage,
+    sortOrder: maxOrder + 1,
+  };
+  const { error } = await supabase.from('paper_types').insert(newPt);
+  if (error) throw error;
+  const { data } = await supabase.from('paper_types').select('*').eq('id', pt.id).single();
+  return data;
 };
 
-export const updatePaperType = (id, updates) => {
-  const fields = [];
-  const values = [];
-  if (updates.name !== undefined) { fields.push('name = ?'); values.push(updates.name); }
-  if (updates.nameAr !== undefined) { fields.push('nameAr = ?'); values.push(updates.nameAr); }
-  if (updates.colorPerPage !== undefined) { fields.push('colorPerPage = ?'); values.push(updates.colorPerPage); }
-  if (updates.blackWhitePerPage !== undefined) { fields.push('blackWhitePerPage = ?'); values.push(updates.blackWhitePerPage); }
-  if (updates.sortOrder !== undefined) { fields.push('sortOrder = ?'); values.push(updates.sortOrder); }
-  if (fields.length === 0) return null;
-  values.push(id);
-  db.prepare(`UPDATE paper_types SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-  return db.prepare('SELECT * FROM paper_types WHERE id = ?').get(id);
+export const updatePaperType = async (id, updates) => {
+  const setFields = {};
+  if (updates.name !== undefined) setFields.name = updates.name;
+  if (updates.nameAr !== undefined) setFields.nameAr = updates.nameAr;
+  if (updates.colorPerPage !== undefined) setFields.colorPerPage = updates.colorPerPage;
+  if (updates.blackWhitePerPage !== undefined) setFields.blackWhitePerPage = updates.blackWhitePerPage;
+  if (updates.sortOrder !== undefined) setFields.sortOrder = updates.sortOrder;
+  if (Object.keys(setFields).length === 0) return null;
+  const { error } = await supabase.from('paper_types').update(setFields).eq('id', id);
+  if (error) throw error;
+  const { data } = await supabase.from('paper_types').select('*').eq('id', id).single();
+  return data;
 };
 
-export const deletePaperType = (id) => {
-  const tx = db.transaction(() => {
-    db.prepare('DELETE FROM paper_types WHERE id = ?').run(id);
-    // Re-index sortOrder
-    const remaining = db.prepare('SELECT id FROM paper_types ORDER BY sortOrder ASC').all();
-    const update = db.prepare('UPDATE paper_types SET sortOrder = ? WHERE id = ?');
-    remaining.forEach((row, idx) => update.run(idx, row.id));
-  });
-  tx();
+export const deletePaperType = async (id) => {
+  const { error } = await supabase.from('paper_types').delete().eq('id', id);
+  if (error) throw error;
+  const { data: remaining } = await supabase.from('paper_types').select('id').order('sortOrder', { ascending: true });
+  for (let i = 0; i < (remaining || []).length; i++) {
+    await supabase.from('paper_types').update({ sortOrder: i }).eq('id', remaining[i].id);
+  }
 };
 
 /**
  * Discount Rules Helpers
  */
-export const getDiscountRules = () => {
-  const rows = db.prepare('SELECT * FROM discount_rules ORDER BY priority DESC, created_at DESC').all();
-  return rows.map(row => ({ ...row, is_active: Boolean(row.is_active) }));
+export const getDiscountRules = async () => {
+  const { data, error } = await supabase.from('discount_rules').select('*').order('priority', { ascending: false }).order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(row => ({ ...row, is_active: Boolean(row.is_active) }));
 };
 
-export const getActiveDiscountRules = () => {
-  const rows = db.prepare('SELECT * FROM discount_rules WHERE is_active = 1 ORDER BY priority DESC').all();
-  return rows.map(row => ({ ...row, is_active: Boolean(row.is_active) }));
+export const getActiveDiscountRules = async () => {
+  const { data, error } = await supabase.from('discount_rules').select('*').eq('is_active', 1).order('priority', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(row => ({ ...row, is_active: Boolean(row.is_active) }));
 };
 
-export const createDiscountRule = (rule) => {
+export const createDiscountRule = async (rule) => {
   const { id, name, discount_type, discount_value, condition_type, threshold, max_discount_cap, priority, is_active } = rule;
-  db.prepare(`
-    INSERT INTO discount_rules (id, name, discount_type, discount_value, condition_type, threshold, max_discount_cap, priority, is_active)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, name, discount_type, discount_value, condition_type, threshold, max_discount_cap || null, priority || 0, is_active ? 1 : 0);
+  const { error } = await supabase.from('discount_rules').insert({
+    id, name, discount_type,
+    discount_value,
+    condition_type,
+    threshold,
+    max_discount_cap: max_discount_cap || null,
+    priority: priority || 0,
+    is_active: is_active ? 1 : 0,
+    created_at: new Date().toISOString(),
+  });
+  if (error) throw error;
   return rule;
 };
 
-export const updateDiscountRule = (id, updates) => {
-  const fields = [];
-  const values = [];
+export const updateDiscountRule = async (id, updates) => {
+  const setFields = {};
+  if (updates.name !== undefined) setFields.name = updates.name;
+  if (updates.discount_type !== undefined) setFields.discount_type = updates.discount_type;
+  if (updates.discount_value !== undefined) setFields.discount_value = updates.discount_value;
+  if (updates.condition_type !== undefined) setFields.condition_type = updates.condition_type;
+  if (updates.threshold !== undefined) setFields.threshold = updates.threshold;
+  if (updates.max_discount_cap !== undefined) setFields.max_discount_cap = updates.max_discount_cap;
+  if (updates.priority !== undefined) setFields.priority = updates.priority;
+  if (updates.is_active !== undefined) setFields.is_active = updates.is_active ? 1 : 0;
 
-  if (updates.name !== undefined) { fields.push('name = ?'); values.push(updates.name); }
-  if (updates.discount_type !== undefined) { fields.push('discount_type = ?'); values.push(updates.discount_type); }
-  if (updates.discount_value !== undefined) { fields.push('discount_value = ?'); values.push(updates.discount_value); }
-  if (updates.condition_type !== undefined) { fields.push('condition_type = ?'); values.push(updates.condition_type); }
-  if (updates.threshold !== undefined) { fields.push('threshold = ?'); values.push(updates.threshold); }
-  if (updates.max_discount_cap !== undefined) { fields.push('max_discount_cap = ?'); values.push(updates.max_discount_cap); }
-  if (updates.priority !== undefined) { fields.push('priority = ?'); values.push(updates.priority); }
-  if (updates.is_active !== undefined) { fields.push('is_active = ?'); values.push(updates.is_active ? 1 : 0); }
+  if (Object.keys(setFields).length === 0) return null;
 
-  if (fields.length === 0) return null;
-
-  values.push(id);
-  db.prepare(`UPDATE discount_rules SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  const { error } = await supabase.from('discount_rules').update(setFields).eq('id', id);
+  if (error) throw error;
   return { id, ...updates };
 };
 
-export const deleteDiscountRule = (id) => {
-  db.prepare('DELETE FROM discount_rules WHERE id = ?').run(id);
+export const deleteDiscountRule = async (id) => {
+  const { error } = await supabase.from('discount_rules').delete().eq('id', id);
+  if (error) throw error;
   return id;
 };
 
-/**
- * Token Encryption Helpers
- */
-const ENCRYPTION_KEY = (() => {
-  const keyHex = process.env.TOKEN_ENCRYPTION_KEY;
-  if (!keyHex) {
-    throw new Error('TOKEN_ENCRYPTION_KEY environment variable is required for token encryption');
-  }
-  return Buffer.from(keyHex, 'hex');
-})();
-
-function encryptToken(plaintext) {
-  if (!plaintext) return '';
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
-  let encrypted = cipher.update(plaintext, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  const authTag = cipher.getAuthTag().toString('hex');
-  return iv.toString('hex') + ':' + authTag + ':' + encrypted;
-}
-
-function decryptToken(ciphertext) {
-  if (!ciphertext || !ciphertext.includes(':')) return '';
-  const parts = ciphertext.split(':');
-  if (parts.length !== 3) return '';
-  const iv = Buffer.from(parts[0], 'hex');
-  const authTag = Buffer.from(parts[1], 'hex');
-  const encrypted = parts[2];
-  try {
-    const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
-    decipher.setAuthTag(authTag);
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
-  } catch {
-    return '';
-  }
-}
-
-/**
- * Gmail Account Helpers
- */
-export const getGmailAccount = () => {
-  const row = db.prepare('SELECT * FROM gmail_account WHERE id = 1').get();
-  if (!row) return null;
-  return {
-    ...row,
-    access_token: decryptToken(row.access_token),
-    refresh_token: decryptToken(row.refresh_token),
-  };
-};
-
-export const updateGmailTokens = ({ email, accessToken, refreshToken, expiryDate }) => {
-  db.prepare(`
-    UPDATE gmail_account 
-    SET gmail_email = ?, access_token = ?, refresh_token = ?, token_expiry = ?, connected_at = CURRENT_TIMESTAMP, is_active = 1
-    WHERE id = 1
-  `).run(email || '', encryptToken(accessToken || ''), encryptToken(refreshToken || ''), expiryDate || null);
-};
-
-export const disconnectGmail = () => {
-  db.prepare(`
-    UPDATE gmail_account 
-    SET gmail_email = '', access_token = '', refresh_token = '', token_expiry = NULL, is_active = 0
-    WHERE id = 1
-  `).run();
-};
-
-export const isEmailProcessed = (gmailMessageId) => {
-  const row = db.prepare('SELECT id FROM processed_emails WHERE gmail_message_id = ?').get(gmailMessageId);
-  return !!row;
-};
-
-export const markEmailProcessed = (gmailMessageId) => {
-  db.prepare('INSERT OR IGNORE INTO processed_emails (gmail_message_id) VALUES (?)').run(gmailMessageId);
-};
-
-/**
- * Gmail Pending Emails (awaiting user review)
- */
-export const getPendingEmails = () => {
-  return db.prepare('SELECT * FROM gmail_pending WHERE discarded_at IS NULL ORDER BY fetched_at DESC').all();
-};
-
-export const isEmailPending = (gmailMessageId) => {
-  const row = db.prepare('SELECT id FROM gmail_pending WHERE gmail_message_id = ?').get(gmailMessageId);
-  return !!row;
-};
-
-export const addPendingEmail = ({ gmailMessageId, from, emailAddress, subject, bodyPreview, attachmentMeta, receivedAt }) => {
-  db.prepare(`
-    INSERT OR IGNORE INTO gmail_pending (gmail_message_id, email_from, email_address, subject, body_preview, attachment_meta, received_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(gmailMessageId, from || '', emailAddress || '', subject || '', bodyPreview || '', JSON.stringify(attachmentMeta || []), receivedAt || null);
-};
-
-export const softDeletePendingEmail = (id) => {
-  db.prepare("UPDATE gmail_pending SET discarded_at = datetime('now') WHERE id = ?").run(id);
-};
-
-export const restorePendingEmail = (id) => {
-  db.prepare("UPDATE gmail_pending SET discarded_at = NULL WHERE id = ?").run(id);
-};
-
-export const removePendingEmail = (id) => {
-  db.prepare('DELETE FROM gmail_pending WHERE id = ?').run(id);
-};
-
-export const getPendingEmailById = (id) => {
-  const row = db.prepare('SELECT * FROM gmail_pending WHERE id = ?').get(id);
-  if (row) row.attachment_meta = JSON.parse(row.attachment_meta || '[]');
-  return row;
-};
-
-export function reopenDb() {
-  try { db.close(); } catch (e) { /* already closed */ }
-  for (const ext of ['-wal', '-shm']) {
-    const p = dbPath + ext;
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  }
-  db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  return db;
-}
-
-export { db as default };
+export { supabase as default };

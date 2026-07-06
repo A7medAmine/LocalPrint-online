@@ -8,7 +8,6 @@ import {
   formatPrice,
   calculateJobDiscount,
 } from "../utils/pricingUtils";
-import QRCode from "qrcode";
 import { toast } from "../components/ui/use-toast";
 import { Toaster } from "../components/ui/toaster";
 import {
@@ -83,8 +82,6 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSettings: propSetting
   const [overallSuccess, setOverallSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recentJobs, setRecentJobs] = useState<PrintJob[]>([]);
-  const [qrCodeUrl, setQrCodeUrl] = useState<string | null>(null);
-  const [showQrCode, setShowQrCode] = useState(false);
 
   // Preview States
   const [previewJob, setPreviewJob] = useState<{ job: PrintJob; url: string } | null>(null);
@@ -267,57 +264,7 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSettings: propSetting
     }
   };
 
-  const generateQRCode = async () => {
-    try {
-      // Get local IP address for network access
-      const localIP = await getLocalIP();
-      const currentPort = window.location.port;
-      const qrData = `http://${localIP}:${currentPort}?ref=upload&lang=${lang}&shop=${encodeURIComponent(localIP)}`;
-
-      const qrCodeDataUrl = await QRCode.toDataURL(qrData, {
-        width: 256,
-        margin: 2,
-        color: {
-          dark: "#1f2937",
-          light: "#ffffff",
-        },
-      });
-
-      setQrCodeUrl(qrCodeDataUrl);
-      setShowQrCode(true);
-    } catch (err) {
-      console.error("Error generating QR code:", err);
-      setError(isRtl ? "فشل إنشاء رمز QR" : "Failed to generate QR code");
-    }
-  };
-
-  const getLocalIP = async (): Promise<string> => {
-    try {
-      const response = await fetch("/api/local-ip");
-      if (!response.ok) {
-        throw new Error("Failed to fetch local IP");
-      }
-      const data = await response.json();
-      return data.ip;
-    } catch (err) {
-      console.error(
-        "Failed to get local IP from API, falling back to hostname:",
-        err,
-      );
-      return window.location.hostname;
-    }
-  };
-
-  const downloadQRCode = () => {
-    if (qrCodeUrl) {
-      const link = document.createElement("a");
-      link.download = `qrcode-${Date.now()}.png`;
-      link.href = qrCodeUrl;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    }
-  };
+  
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []) as File[];
@@ -505,26 +452,6 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSettings: propSetting
         </h1>
         <p className="text-sm sm:text-base text-gray-600 dark:text-gray-300">{t("uploadSub")}</p>
         <div className="mt-4 flex justify-center gap-3">
-          <Button
-            variant="link"
-            onClick={generateQRCode}
-            className="gap-2"
-          >
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="2"
-                d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z"
-              ></path>
-            </svg>
-            {isRtl ? "إنشاء رمز QR" : "Generate QR Code"}
-          </Button>
           {shopSettings && (shopSettings.phoneNumbers?.length > 0 || shopSettings.email || shopSettings.address) && (
             <Button
               variant="link"
@@ -1306,55 +1233,6 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSettings: propSetting
           )}
         </div>
       )}
-
-      {/* QR Code Dialog */}
-      <Dialog open={showQrCode} onOpenChange={setShowQrCode}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>{isRtl ? "رمز QR للموقع" : "QR Code for Upload Page"}</DialogTitle>
-            <DialogDescription>
-              {isRtl
-                ? "امسح هذا الرمز للوصول السريع إلى صفحة الرفع"
-                : "Scan this code for quick access to the upload page"}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="text-center">
-            <p className="text-xs text-muted-foreground mb-4">
-              {isRtl
-                ? "يعمل على نفس الشبكة المحلية فقط"
-                : "Works on the same local network only"}
-            </p>
-            {qrCodeUrl && (
-              <div className="flex justify-center mb-4">
-                <img
-                  src={qrCodeUrl}
-                  alt="QR Code"
-                  className="border-2 border-gray-200 dark:border-gray-700 rounded-lg"
-                />
-              </div>
-            )}
-            <Button
-              onClick={downloadQRCode}
-              className="w-full gap-2"
-            >
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="2"
-                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-                />
-              </svg>
-              {isRtl ? "تحميل رمز QR" : "Download QR Code"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <PreviewModal
         open={previewJob !== null}

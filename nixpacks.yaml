@@ -1,0 +1,22 @@
+# https://nixpacks.com/docs/configuration
+name: localprint-cloud
+
+variables:
+  NODE_ENV: production
+
+phases:
+  install:
+    cmds:
+      - npm ci
+  build:
+    cmds:
+      - npm run build
+    cache:
+      - dist
+      - node_modules
+
+start:
+  cmd: node server.js
+
+static:
+  dir: dist
