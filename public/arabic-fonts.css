@@ -1,0 +1,73 @@
+/* Arabic Font Styles - IBM Plex Arabic Text font */
+@font-face {
+  font-family: "IBMPlexArabic";
+  src: url("/IBMPlexArabic-Text.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  unicode-range:
+    U+0600-06FF, U+0750-077F, U+08A0-08FF, U+FB50-FDFF, U+FE70-FEFF;
+}
+
+/* Arabic text styling */
+[dir="rtl"] {
+  font-family: "IBMPlexArabic", sans-serif;
+}
+
+[dir="rtl"] body {
+  font-family: "IBMPlexArabic", sans-serif;
+}
+
+[dir="rtl"] h1,
+[dir="rtl"] h2,
+[dir="rtl"] h3,
+[dir="rtl"] h4,
+[dir="rtl"] h5,
+[dir="rtl"] h6 {
+  font-family: "IBMPlexArabic", sans-serif;
+  font-weight: 700;
+}
+
+[dir="rtl"] .font-bold,
+[dir="rtl"] .font-semibold {
+  font-family: "IBMPlexArabic", sans-serif;
+  font-weight: 700;
+}
+
+/* Ensure proper Arabic text rendering */
+[dir="rtl"] {
+  text-align: right;
+}
+
+[dir="rtl"] input,
+[dir="rtl"] textarea {
+  text-align: right;
+  font-family: "IBMPlexArabic", sans-serif;
+}
+
+/* RTL layout adjustments */
+[dir="rtl"] .flex {
+  direction: rtl;
+}
+
+[dir="rtl"] .text-left {
+  text-align: right !important;
+}
+
+[dir="rtl"] .text-right {
+  text-align: left !important;
+}
+
+[dir="rtl"] .mr-2 {
+  margin-right: 0 !important;
+  margin-left: 0.5rem !important;
+}
+
+[dir="rtl"] .ml-2 {
+  margin-left: 0 !important;
+  margin-right: 0.5rem !important;
+}
+
+[dir="rtl"] .gap-2 > * + * {
+  margin-left: 0 !important;
+  margin-right: 0.5rem !important;
+}

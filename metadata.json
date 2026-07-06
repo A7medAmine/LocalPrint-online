@@ -1,0 +1,5 @@
+{
+  "name": "PrintShop Hub",
+  "description": "A lightweight, self-hosted file management system for printing businesses. Features public uploads, admin dashboard, and multi-language (English/Arabic) support.",
+  "requestFramePermissions": []
+}

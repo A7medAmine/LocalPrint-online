@@ -1,0 +1,34 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+uploads
+node_modules
+dist
+dist-ssr
+*.local
+db.json
+uploads
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.env
+env
+AGENTS.md
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+client_secret_539243491583-8ud5jak3qeuucpm8j5q99icjiugeuatm.apps.googleusercontent.com.json
+database.sqlite.before_restore
+.env
