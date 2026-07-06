@@ -1,4 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
+import { WebSocket } from 'ws';
+
+// Provide native WebSocket for environments that lack it (Alpine Node < 22)
+if (typeof globalThis.WebSocket === 'undefined') {
+  globalThis.WebSocket = WebSocket;
+}
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
@@ -7,9 +13,7 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error('SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables are required');
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey, {
-  realtime: { enabled: false },
-});
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 /**
  * Settings Helpers
