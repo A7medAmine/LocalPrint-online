@@ -7,8 +7,5 @@ cmds = ["npm ci"]
 [phases.build]
 cmds = ["npm run build"]
 
-[phases.build.cache]
-files = ["dist", "node_modules"]
-
 [start]
 cmd = "node server.js"
