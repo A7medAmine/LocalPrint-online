@@ -152,8 +152,8 @@ const backfillPageCounts = async () => {
   const { data: pdfOrdersMissingCount, error } = await supabase
     .from('orders')
     .select('*')
-    .eq('fileType', 'application/pdf')
-    .or('pageCount.is.null,pageCount.eq.0');
+    .eq('filetype', 'application/pdf')
+    .or('pagecount.is.null,pagecount.eq.0');
 
   if (error) { console.error("❌ Backfill query error:", error); return; }
   if (!pdfOrdersMissingCount || pdfOrdersMissingCount.length === 0) {
@@ -164,18 +164,18 @@ const backfillPageCounts = async () => {
   console.log(`📚 Backfilling page counts for ${pdfOrdersMissingCount.length} PDF order(s)...`);
 
   for (const order of pdfOrdersMissingCount) {
-    if (!order.serverFileName) {
+    if (!order.serverfilename) {
       console.warn(`  ⚠️  Order ${order.id} has no serverFileName — skipping.`);
       continue;
     }
-    const filePath = path.join(UPLOADS_DIR, order.serverFileName);
+    const filePath = path.join(UPLOADS_DIR, order.serverfilename);
     if (fs.existsSync(filePath)) {
       const count = await getPdfPageCount(filePath);
       if (count !== null) {
-        await supabase.from('orders').update({ pageCount: count }).eq('id', order.id);
-        console.log(`  ✅ ${order.fileName}: ${count} page(s)`);
+        await supabase.from('orders').update({ pagecount: count }).eq('id', order.id);
+        console.log(`  ✅ ${order.filename}: ${count} page(s)`);
       } else {
-        console.warn(`  ⚠️  Could not count pages for ${order.fileName}`);
+        console.warn(`  ⚠️  Could not count pages for ${order.filename}`);
       }
     } else {
       console.warn(`  ⚠️  File not found for order ${order.id}`);
@@ -242,27 +242,46 @@ app.post("/api/upload", rateLimit, upload.single("file"), async (req, res) => {
 
     const newOrder = {
       id: metadata.id,
-      customerName: metadata.customerName || '',
-      phoneNumber: metadata.phoneNumber || '',
+      customername: metadata.customerName || '',
+      phonenumber: metadata.phoneNumber || '',
       notes: metadata.notes || '',
-      fileName: metadata.fileName || req.file.originalname,
-      fileType: req.file.mimetype,
-      fileSize: req.file.size,
-      uploadDate: new Date().toISOString(),
+      filename: metadata.fileName || req.file.originalname,
+      filetype: req.file.mimetype,
+      filesize: req.file.size,
+      uploaddate: new Date().toISOString(),
       status: 'PENDING',
-      serverFileName: req.file.filename,
-      pageCount: pageCount,
-      colorMode: metadata.printPreferences?.colorMode || 'color',
+      serverfilename: req.file.filename,
+      pagecount: pageCount,
+      colormode: metadata.printPreferences?.colorMode || 'color',
       copies: metadata.printPreferences?.copies || 1,
-      paperType: metadata.printPreferences?.paperType || 'normal',
+      papertype: metadata.printPreferences?.paperType || 'normal',
       source: 'upload',
-      shopSyncStatus: 'pending',
+      shopsyncstatus: 'pending',
     };
 
     const { error } = await supabase.from('orders').insert(newOrder);
     if (error) throw error;
 
-    res.status(200).json({ success: true, job: newOrder });
+    // Return camelCase to the client
+    const responseOrder = {
+      id: metadata.id,
+      customerName: newOrder.customername,
+      phoneNumber: newOrder.phonenumber,
+      notes: newOrder.notes,
+      fileName: newOrder.filename,
+      fileType: newOrder.filetype,
+      fileSize: newOrder.filesize,
+      uploadDate: newOrder.uploaddate,
+      status: newOrder.status,
+      serverFileName: newOrder.serverfilename,
+      pageCount: newOrder.pagecount,
+      colorMode: newOrder.colormode,
+      copies: newOrder.copies,
+      paperType: newOrder.papertype,
+      source: newOrder.source,
+      shopSyncStatus: newOrder.shopsyncstatus,
+    };
+    res.status(200).json({ success: true, job: responseOrder });
   } catch (err) {
     console.error("❌ Upload Error:", err);
     res.status(400).json({ success: false, error: "Invalid upload metadata" });
@@ -279,25 +298,25 @@ app.post("/api/orders/query", async (req, res) => {
     .from('orders')
     .select('*')
     .in('id', ids)
-    .order('uploadDate', { ascending: false });
+    .order('uploaddate', { ascending: false });
   if (error) throw error;
 
   const sanitized = (orders || []).map(order => ({
     id: order.id,
-    fileName: order.fileName,
-    fileType: order.fileType,
-    fileSize: order.fileSize,
-    uploadDate: order.uploadDate,
+    fileName: order.filename,
+    fileType: order.filetype,
+    fileSize: order.filesize,
+    uploadDate: order.uploaddate,
     status: order.status,
-    pageCount: order.pageCount,
-    paperType: order.paperType || 'normal',
-    colorMode: order.colorMode,
+    pageCount: order.pagecount,
+    paperType: order.papertype || 'normal',
+    colorMode: order.colormode,
     copies: order.copies,
     source: order.source,
     printPreferences: {
-      colorMode: order.colorMode,
+      colorMode: order.colormode,
       copies: order.copies,
-      paperType: order.paperType || 'normal'
+      paperType: order.papertype || 'normal'
     },
   }));
   res.status(200).json(sanitized);
@@ -317,7 +336,7 @@ app.delete("/api/orders/:id", async (req, res) => {
     return res.status(404).json({ success: false, error: "Order not found" });
   }
 
-  const filePath = path.join(UPLOADS_DIR, order.serverFileName);
+  const filePath = path.join(UPLOADS_DIR, order.serverfilename);
   try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) { console.warn("⚠️  Could not delete physical file"); }
 
   await supabase.from('orders').delete().eq('id', orderId);
@@ -327,16 +346,16 @@ app.delete("/api/orders/:id", async (req, res) => {
 // Public file access by order ID
 app.get("/api/files/public/:id", async (req, res) => {
   try {
-    const { data: order, error } = await supabase.from('orders').select('serverFileName, fileName').eq('id', req.params.id).single();
-    if (error || !order || !order.serverFileName) {
+    const { data: order, error } = await supabase.from('orders').select('serverfilename, filename').eq('id', req.params.id).single();
+    if (error || !order || !order.serverfilename) {
       return res.status(404).json({ error: "File not found" });
     }
-    const filePath = path.resolve(path.join(UPLOADS_DIR, order.serverFileName));
+    const filePath = path.resolve(path.join(UPLOADS_DIR, order.serverfilename));
     if (!filePath.startsWith(path.resolve(UPLOADS_DIR))) {
       return res.status(403).json({ error: "Forbidden" });
     }
     if (fs.existsSync(filePath)) {
-      const safeName = order.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const safeName = order.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
       res.set("Content-Disposition", `inline; filename="${safeName}"`);
       res.sendFile(filePath);
     } else {
@@ -406,8 +425,8 @@ app.get("/api/shop/pending", requireShopToken, async (req, res) => {
   const { data: orders, error } = await supabase
     .from('orders')
     .select('*')
-    .eq('shopSyncStatus', 'pending')
-    .order('uploadDate', { ascending: false });
+    .eq('shopsyncstatus', 'pending')
+    .order('uploaddate', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
   res.status(200).json(orders || []);
 });
@@ -416,13 +435,13 @@ app.get("/api/shop/pending", requireShopToken, async (req, res) => {
 app.get("/api/shop/file/:orderId", requireShopToken, async (req, res) => {
   const { data: order, error } = await supabase.from('orders').select('*').eq('id', req.params.orderId).single();
   if (error || !order) return res.status(404).json({ error: "Order not found" });
-  if (!order.serverFileName) return res.status(404).json({ error: "No file for this order" });
+  if (!order.serverfilename) return res.status(404).json({ error: "No file for this order" });
 
-  const filePath = path.resolve(path.join(UPLOADS_DIR, order.serverFileName));
+  const filePath = path.resolve(path.join(UPLOADS_DIR, order.serverfilename));
   if (!filePath.startsWith(path.resolve(UPLOADS_DIR))) return res.status(403).json({ error: "Forbidden" });
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: "File not found on disk" });
 
-  const safeName = order.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const safeName = order.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
   res.set("Content-Disposition", `attachment; filename="${safeName}"`);
   res.sendFile(filePath);
 });
@@ -435,9 +454,9 @@ app.post("/api/shop/ack", requireShopToken, async (req, res) => {
   }
   const { error } = await supabase
     .from('orders')
-    .update({ shopSyncStatus: 'claimed' })
+    .update({ shopsyncstatus: 'claimed' })
     .in('id', orderIds)
-    .eq('shopSyncStatus', 'pending');
+    .eq('shopsyncstatus', 'pending');
   if (error) return res.status(500).json({ error: error.message });
   res.status(200).json({ success: true, claimed: orderIds.length });
 });
@@ -523,15 +542,15 @@ const cleanupOldOrders = async () => {
     const { data: oldOrders, error } = await supabase
       .from('orders')
       .select('*')
-      .eq('shopSyncStatus', 'claimed')
-      .lt('uploadDate', sevenDaysAgo);
+      .eq('shopsyncstatus', 'claimed')
+      .lt('uploaddate', sevenDaysAgo);
 
     if (error) { console.error("❌ Cleanup query error:", error); return; }
     if (!oldOrders || oldOrders.length === 0) return;
 
     for (const order of oldOrders) {
-      if (order.serverFileName) {
-        const filePath = path.join(UPLOADS_DIR, order.serverFileName);
+      if (order.serverfilename) {
+        const filePath = path.join(UPLOADS_DIR, order.serverfilename);
         try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) {}
       }
       await supabase.from('orders').delete().eq('id', order.id);

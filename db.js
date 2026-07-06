@@ -13,7 +13,9 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error('SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables are required');
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  realtime: { transport: WebSocket },
+});
 
 /**
  * Settings Helpers
@@ -45,7 +47,7 @@ export const updateSetting = async (key, value) => {
  * Paper Types Helpers
  */
 export const getPaperTypes = async () => {
-  const { data, error } = await supabase.from('paper_types').select('*').order('sortOrder', { ascending: true });
+  const { data, error } = await supabase.from('paper_types').select('*').order('sortorder', { ascending: true });
   if (error) throw error;
   return data || [];
 };
@@ -57,25 +59,25 @@ export const replaceAllPaperTypes = async (types) => {
   const rows = types.map((pt, idx) => ({
     id: pt.id,
     name: pt.name,
-    nameAr: pt.nameAr || pt.name,
-    colorPerPage: pt.colorPerPage,
-    blackWhitePerPage: pt.blackWhitePerPage,
-    sortOrder: idx,
+    namear: pt.nameAr || pt.name,
+    colorperpage: pt.colorPerPage,
+    blackwhiteperpage: pt.blackWhitePerPage,
+    sortorder: idx,
   }));
   const { error } = await supabase.from('paper_types').insert(rows);
   if (error) throw error;
 };
 
 export const createPaperType = async (pt) => {
-  const { data: maxOrderData } = await supabase.from('paper_types').select('sortOrder').order('sortOrder', { ascending: false }).limit(1);
-  const maxOrder = maxOrderData?.[0]?.sortOrder ?? -1;
+  const { data: maxOrderData } = await supabase.from('paper_types').select('sortorder').order('sortorder', { ascending: false }).limit(1);
+  const maxOrder = maxOrderData?.[0]?.sortorder ?? -1;
   const newPt = {
     id: pt.id,
     name: pt.name,
-    nameAr: pt.nameAr || pt.name,
-    colorPerPage: pt.colorPerPage,
-    blackWhitePerPage: pt.blackWhitePerPage,
-    sortOrder: maxOrder + 1,
+    namear: pt.nameAr || pt.name,
+    colorperpage: pt.colorPerPage,
+    blackwhiteperpage: pt.blackWhitePerPage,
+    sortorder: maxOrder + 1,
   };
   const { error } = await supabase.from('paper_types').insert(newPt);
   if (error) throw error;
@@ -86,10 +88,10 @@ export const createPaperType = async (pt) => {
 export const updatePaperType = async (id, updates) => {
   const setFields = {};
   if (updates.name !== undefined) setFields.name = updates.name;
-  if (updates.nameAr !== undefined) setFields.nameAr = updates.nameAr;
-  if (updates.colorPerPage !== undefined) setFields.colorPerPage = updates.colorPerPage;
-  if (updates.blackWhitePerPage !== undefined) setFields.blackWhitePerPage = updates.blackWhitePerPage;
-  if (updates.sortOrder !== undefined) setFields.sortOrder = updates.sortOrder;
+  if (updates.nameAr !== undefined) setFields.namear = updates.nameAr;
+  if (updates.colorPerPage !== undefined) setFields.colorperpage = updates.colorPerPage;
+  if (updates.blackWhitePerPage !== undefined) setFields.blackwhiteperpage = updates.blackWhitePerPage;
+  if (updates.sortOrder !== undefined) setFields.sortorder = updates.sortOrder;
   if (Object.keys(setFields).length === 0) return null;
   const { error } = await supabase.from('paper_types').update(setFields).eq('id', id);
   if (error) throw error;
@@ -100,9 +102,9 @@ export const updatePaperType = async (id, updates) => {
 export const deletePaperType = async (id) => {
   const { error } = await supabase.from('paper_types').delete().eq('id', id);
   if (error) throw error;
-  const { data: remaining } = await supabase.from('paper_types').select('id').order('sortOrder', { ascending: true });
+  const { data: remaining } = await supabase.from('paper_types').select('id').order('sortorder', { ascending: true });
   for (let i = 0; i < (remaining || []).length; i++) {
-    await supabase.from('paper_types').update({ sortOrder: i }).eq('id', remaining[i].id);
+    await supabase.from('paper_types').update({ sortorder: i }).eq('id', remaining[i].id);
   }
 };
 
