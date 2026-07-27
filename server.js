@@ -119,7 +119,7 @@ const __dirname = path.dirname(__filename);
 
 const NODE_ENV = process.env.NODE_ENV || "development";
 const isDev = NODE_ENV === "development";
-const PORT = process.env.PORT || (isDev ? 3001 : 3000);
+const PORT = process.env.PORT || (isDev ? 5001 : 3000);
 
 const DIST_DIR = path.join(__dirname, "dist");
 const UPLOADS_DIR = path.join(__dirname, "uploads");
@@ -455,7 +455,25 @@ app.get("/api/shop/pending", requireShopToken, async (req, res) => {
     .eq('shopsyncstatus', 'pending')
     .order('uploaddate', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
-  res.status(200).json(orders || []);
+
+  const camelOrders = (orders || []).map(order => ({
+    id: order.id,
+    customerName: order.customername,
+    phoneNumber: order.phonenumber,
+    notes: order.notes,
+    fileName: order.filename,
+    fileType: order.filetype,
+    fileSize: order.filesize,
+    uploadDate: order.uploaddate,
+    status: order.status,
+    serverFileName: order.serverfilename,
+    pageCount: order.pagecount,
+    colorMode: order.colormode,
+    copies: order.copies,
+    paperType: order.papertype,
+    source: order.source,
+  }));
+  res.status(200).json(camelOrders);
 });
 
 // Download file for a specific order

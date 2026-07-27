@@ -13,7 +13,7 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       "/api": {
-        target: "http://localhost:3001",
+        target: "http://localhost:5001",
         changeOrigin: true,
         configure: (proxy) => {
           proxy.on("error", (err) => {

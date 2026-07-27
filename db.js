@@ -101,10 +101,18 @@ export const updateSetting = async (shopId, key, value) => {
 /**
  * Paper Types Helpers
  */
+const toCamelPaperType = (row) => ({
+  id: row.id,
+  name: row.name,
+  nameAr: row.namear,
+  colorPerPage: row.colorperpage,
+  blackWhitePerPage: row.blackwhiteperpage,
+});
+
 export const getPaperTypes = async (shopId) => {
   const { data, error } = await supabase.from('paper_types').select('*').eq('shop_id', shopId).order('sortorder', { ascending: true });
   if (error) throw error;
-  return data || [];
+  return (data || []).map(toCamelPaperType);
 };
 
 export const replaceAllPaperTypes = async (shopId, types) => {
