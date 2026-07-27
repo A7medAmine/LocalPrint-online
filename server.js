@@ -14,6 +14,9 @@ import supabase, {
   replaceAllPaperTypes,
   getDiscountRules,
   getActiveDiscountRules,
+  hashToken,
+  getShopBySlug,
+  getShopByTokenHash,
 } from './db.js';
 
 // ── Magic byte signatures for file validation ──
@@ -38,17 +41,38 @@ function validateMagicBytes(filePath, mimeType) {
   );
 }
 
-// ── Shop token middleware ──
-function requireShopToken(req, res, next) {
+// ── Shop token middleware — resolves which shop a Bearer token belongs to ──
+async function requireShopToken(req, res, next) {
   const auth = req.headers.authorization;
-  const expectedToken = process.env.SHOP_API_TOKEN;
-  if (!expectedToken) {
-    return res.status(500).json({ error: 'SHOP_API_TOKEN not configured on server' });
-  }
-  if (!auth || !auth.startsWith('Bearer ') || auth.slice(7) !== expectedToken) {
+  if (!auth || !auth.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  next();
+  try {
+    const shop = await getShopByTokenHash(hashToken(auth.slice(7)));
+    if (!shop) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    req.shop = shop;
+    next();
+  } catch (err) {
+    console.error('❌ Shop token lookup error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── Shop slug middleware — resolves the shop for public customer-facing routes ──
+async function resolveShopBySlug(req, res, next) {
+  try {
+    const shop = await getShopBySlug(req.params.shopSlug);
+    if (!shop) {
+      return res.status(404).json({ error: 'Shop not found' });
+    }
+    req.shop = shop;
+    next();
+  } catch (err) {
+    console.error('❌ Shop slug lookup error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 }
 
 // ── Rate limiter (in-memory, per-IP) ──
@@ -221,7 +245,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // Public upload endpoint (rate-limited)
-app.post("/api/upload", rateLimit, upload.single("file"), async (req, res) => {
+app.post("/api/s/:shopSlug/upload", rateLimit, resolveShopBySlug, upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, error: "No file uploaded" });
@@ -242,6 +266,7 @@ app.post("/api/upload", rateLimit, upload.single("file"), async (req, res) => {
 
     const newOrder = {
       id: metadata.id,
+      shop_id: req.shop.id,
       customername: metadata.customerName || '',
       phonenumber: metadata.phoneNumber || '',
       notes: metadata.notes || '',
@@ -289,7 +314,7 @@ app.post("/api/upload", rateLimit, upload.single("file"), async (req, res) => {
 });
 
 // Public order query — lookup by ID array for "my recent uploads"
-app.post("/api/orders/query", async (req, res) => {
+app.post("/api/s/:shopSlug/orders/query", resolveShopBySlug, async (req, res) => {
   const { ids } = req.body;
   if (!Array.isArray(ids) || ids.length === 0) {
     return res.status(200).json([]);
@@ -297,6 +322,7 @@ app.post("/api/orders/query", async (req, res) => {
   const { data: orders, error } = await supabase
     .from('orders')
     .select('*')
+    .eq('shop_id', req.shop.id)
     .in('id', ids)
     .order('uploaddate', { ascending: false });
   if (error) throw error;
@@ -323,7 +349,7 @@ app.post("/api/orders/query", async (req, res) => {
 });
 
 // Delete order (ownership verified via myIds)
-app.delete("/api/orders/:id", async (req, res) => {
+app.delete("/api/s/:shopSlug/orders/:id", resolveShopBySlug, async (req, res) => {
   const orderId = req.params.id;
   const { myIds } = req.body || {};
 
@@ -331,7 +357,7 @@ app.delete("/api/orders/:id", async (req, res) => {
     return res.status(403).json({ success: false, error: "Not authorized to delete this order" });
   }
 
-  const { data: order, error } = await supabase.from('orders').select('*').eq('id', orderId).single();
+  const { data: order, error } = await supabase.from('orders').select('*').eq('shop_id', req.shop.id).eq('id', orderId).single();
   if (error || !order) {
     return res.status(404).json({ success: false, error: "Order not found" });
   }
@@ -339,14 +365,14 @@ app.delete("/api/orders/:id", async (req, res) => {
   const filePath = path.join(UPLOADS_DIR, order.serverfilename);
   try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) { console.warn("⚠️  Could not delete physical file"); }
 
-  await supabase.from('orders').delete().eq('id', orderId);
+  await supabase.from('orders').delete().eq('shop_id', req.shop.id).eq('id', orderId);
   res.status(200).json({ success: true });
 });
 
 // Public file access by order ID
-app.get("/api/files/public/:id", async (req, res) => {
+app.get("/api/s/:shopSlug/files/public/:id", resolveShopBySlug, async (req, res) => {
   try {
-    const { data: order, error } = await supabase.from('orders').select('serverfilename, filename').eq('id', req.params.id).single();
+    const { data: order, error } = await supabase.from('orders').select('serverfilename, filename').eq('shop_id', req.shop.id).eq('id', req.params.id).single();
     if (error || !order || !order.serverfilename) {
       return res.status(404).json({ error: "File not found" });
     }
@@ -367,8 +393,8 @@ app.get("/api/files/public/:id", async (req, res) => {
 });
 
 // Public logo access
-app.get("/api/logo", async (req, res) => {
-  const settings = await getSettings();
+app.get("/api/s/:shopSlug/logo", resolveShopBySlug, async (req, res) => {
+  const settings = await getSettings(req.shop.id);
   const filename = settings._logo_filename;
   if (!filename) return res.status(404).json({ error: "No logo" });
   const filePath = path.resolve(path.join(UPLOADS_DIR, filename));
@@ -379,16 +405,16 @@ app.get("/api/logo", async (req, res) => {
 });
 
 // Get settings (public — used by price calculator)
-app.get("/api/settings", async (req, res) => {
-  const settings = await getSettings();
-  settings.paperTypes = await getPaperTypes();
+app.get("/api/s/:shopSlug/settings", resolveShopBySlug, async (req, res) => {
+  const settings = await getSettings(req.shop.id);
+  settings.paperTypes = await getPaperTypes(req.shop.id);
   res.status(200).json(settings);
 });
 
 // Get paper types (public)
-app.get("/api/paper-types", async (req, res) => {
+app.get("/api/s/:shopSlug/paper-types", resolveShopBySlug, async (req, res) => {
   try {
-    res.status(200).json(await getPaperTypes());
+    res.status(200).json(await getPaperTypes(req.shop.id));
   } catch (err) {
     console.error("❌ Error fetching paper types:", err);
     res.status(500).json({ error: "Failed to fetch paper types" });
@@ -396,9 +422,9 @@ app.get("/api/paper-types", async (req, res) => {
 });
 
 // Get discount rules (public reads)
-app.get("/api/discount-rules", async (req, res) => {
+app.get("/api/s/:shopSlug/discount-rules", resolveShopBySlug, async (req, res) => {
   try {
-    const rules = await getDiscountRules();
+    const rules = await getDiscountRules(req.shop.id);
     res.status(200).json(rules);
   } catch (err) {
     console.error("❌ Error fetching discount rules:", err);
@@ -406,9 +432,9 @@ app.get("/api/discount-rules", async (req, res) => {
   }
 });
 
-app.get("/api/discount-rules/active", async (req, res) => {
+app.get("/api/s/:shopSlug/discount-rules/active", resolveShopBySlug, async (req, res) => {
   try {
-    const rules = await getActiveDiscountRules();
+    const rules = await getActiveDiscountRules(req.shop.id);
     res.status(200).json(rules);
   } catch (err) {
     console.error("❌ Error fetching active discount rules:", err);
@@ -425,6 +451,7 @@ app.get("/api/shop/pending", requireShopToken, async (req, res) => {
   const { data: orders, error } = await supabase
     .from('orders')
     .select('*')
+    .eq('shop_id', req.shop.id)
     .eq('shopsyncstatus', 'pending')
     .order('uploaddate', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
@@ -433,7 +460,7 @@ app.get("/api/shop/pending", requireShopToken, async (req, res) => {
 
 // Download file for a specific order
 app.get("/api/shop/file/:orderId", requireShopToken, async (req, res) => {
-  const { data: order, error } = await supabase.from('orders').select('*').eq('id', req.params.orderId).single();
+  const { data: order, error } = await supabase.from('orders').select('*').eq('shop_id', req.shop.id).eq('id', req.params.orderId).single();
   if (error || !order) return res.status(404).json({ error: "Order not found" });
   if (!order.serverfilename) return res.status(404).json({ error: "No file for this order" });
 
@@ -455,6 +482,7 @@ app.post("/api/shop/ack", requireShopToken, async (req, res) => {
   const { error } = await supabase
     .from('orders')
     .update({ shopsyncstatus: 'claimed' })
+    .eq('shop_id', req.shop.id)
     .in('id', orderIds)
     .eq('shopsyncstatus', 'pending');
   if (error) return res.status(500).json({ error: error.message });
@@ -467,7 +495,7 @@ app.post("/api/shop/status", requireShopToken, async (req, res) => {
   if (!orderId || !status) {
     return res.status(400).json({ error: "orderId and status are required" });
   }
-  const { error } = await supabase.from('orders').update({ status }).eq('id', orderId);
+  const { error } = await supabase.from('orders').update({ status }).eq('shop_id', req.shop.id).eq('id', orderId);
   if (error) return res.status(500).json({ error: error.message });
   res.status(200).json({ success: true });
 });
@@ -476,9 +504,10 @@ app.post("/api/shop/status", requireShopToken, async (req, res) => {
 app.post("/api/shop/settings-sync", requireShopToken, async (req, res) => {
   try {
     const { pricing, paperTypes, discountRules } = req.body;
+    const shopId = req.shop.id;
 
     if (pricing && typeof pricing === 'object') {
-      await updateSetting('pricing', {
+      await updateSetting(shopId, 'pricing', {
         colorPerPage: parseFloat(pricing.colorPerPage) || 30.0,
         blackWhitePerPage: parseFloat(pricing.blackWhitePerPage) || 15.0,
         glossyPerPage: parseFloat(pricing.glossyPerPage) || 50.0,
@@ -486,38 +515,39 @@ app.post("/api/shop/settings-sync", requireShopToken, async (req, res) => {
       });
     }
     if (pricing?.shopName) {
-      await updateSetting('shopName', pricing.shopName);
+      await updateSetting(shopId, 'shopName', pricing.shopName);
     }
     if (pricing?.phoneNumbers) {
-      await updateSetting('phoneNumbers', pricing.phoneNumbers);
+      await updateSetting(shopId, 'phoneNumbers', pricing.phoneNumbers);
     }
     if (pricing?.email) {
-      await updateSetting('email', pricing.email);
+      await updateSetting(shopId, 'email', pricing.email);
     }
     if (pricing?.address) {
-      await updateSetting('address', pricing.address);
+      await updateSetting(shopId, 'address', pricing.address);
     }
     if (pricing?.workingHours) {
-      await updateSetting('workingHours', pricing.workingHours);
+      await updateSetting(shopId, 'workingHours', pricing.workingHours);
     }
     if (pricing?.returnPolicy) {
-      await updateSetting('returnPolicy', pricing.returnPolicy);
+      await updateSetting(shopId, 'returnPolicy', pricing.returnPolicy);
     }
     if (pricing?.logoUrl) {
-      await updateSetting('logoUrl', pricing.logoUrl);
+      await updateSetting(shopId, 'logoUrl', pricing.logoUrl);
     }
 
     if (Array.isArray(paperTypes)) {
-      await replaceAllPaperTypes(paperTypes);
+      await replaceAllPaperTypes(shopId, paperTypes);
     }
 
     if (Array.isArray(discountRules)) {
-      const { error: delErr } = await supabase.from('discount_rules').delete().neq('id', 'nonexistent');
+      const { error: delErr } = await supabase.from('discount_rules').delete().eq('shop_id', shopId);
       if (delErr && delErr.code !== 'PGRST116') throw delErr;
       if (discountRules.length > 0) {
         const { error: insErr } = await supabase.from('discount_rules').insert(
           discountRules.map(r => ({
             ...r,
+            shop_id: shopId,
             is_active: r.is_active ? 1 : 0,
             created_at: r.created_at || new Date().toISOString(),
           }))

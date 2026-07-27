@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { WebSocket } from 'ws';
+import { randomBytes, randomUUID, createHash } from 'crypto';
 
 // Provide native WebSocket for environments that lack it (Alpine Node < 22)
 if (typeof globalThis.WebSocket === 'undefined') {
@@ -18,10 +19,64 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 /**
+ * Shop Helpers
+ */
+export const hashToken = (token) => createHash('sha256').update(token).digest('hex');
+
+const slugify = (name) =>
+  name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'shop';
+
+export const getShopBySlug = async (slug) => {
+  const { data, error } = await supabase.from('shops').select('*').eq('slug', slug).single();
+  if (error) {
+    if (error.code === 'PGRST116') return null;
+    throw error;
+  }
+  return data;
+};
+
+export const getShopByTokenHash = async (tokenHash) => {
+  const { data, error } = await supabase.from('shops').select('*').eq('token_hash', tokenHash).single();
+  if (error) {
+    if (error.code === 'PGRST116') return null;
+    throw error;
+  }
+  return data;
+};
+
+export const createShop = async (name) => {
+  const baseSlug = slugify(name);
+  let slug = baseSlug;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const existing = await getShopBySlug(slug);
+    if (!existing) break;
+    slug = `${baseSlug}-${randomBytes(2).toString('hex')}`;
+  }
+
+  const id = randomUUID();
+  const token = randomBytes(32).toString('hex');
+  const tokenHash = hashToken(token);
+
+  const { error } = await supabase.from('shops').insert({
+    id,
+    slug,
+    name,
+    token_hash: tokenHash,
+  });
+  if (error) throw error;
+
+  return { id, slug, name, token };
+};
+
+/**
  * Settings Helpers
  */
-export const getSettings = async () => {
-  const { data: rows, error } = await supabase.from('settings').select('*');
+export const getSettings = async (shopId) => {
+  const { data: rows, error } = await supabase.from('settings').select('*').eq('shop_id', shopId);
   if (error) throw error;
   const settings = {};
   (rows || []).forEach(row => {
@@ -34,11 +89,11 @@ export const getSettings = async () => {
   return settings;
 };
 
-export const updateSetting = async (key, value) => {
+export const updateSetting = async (shopId, key, value) => {
   const serializedValue = typeof value === 'object' ? JSON.stringify(value) : value;
   const { error } = await supabase.from('settings').upsert(
-    { key, value: serializedValue },
-    { onConflict: 'key' }
+    { shop_id: shopId, key, value: serializedValue },
+    { onConflict: 'shop_id,key' }
   );
   if (error) throw error;
 };
@@ -46,18 +101,19 @@ export const updateSetting = async (key, value) => {
 /**
  * Paper Types Helpers
  */
-export const getPaperTypes = async () => {
-  const { data, error } = await supabase.from('paper_types').select('*').order('sortorder', { ascending: true });
+export const getPaperTypes = async (shopId) => {
+  const { data, error } = await supabase.from('paper_types').select('*').eq('shop_id', shopId).order('sortorder', { ascending: true });
   if (error) throw error;
   return data || [];
 };
 
-export const replaceAllPaperTypes = async (types) => {
-  const { error: delError } = await supabase.from('paper_types').delete().neq('id', 'nonexistent');
+export const replaceAllPaperTypes = async (shopId, types) => {
+  const { error: delError } = await supabase.from('paper_types').delete().eq('shop_id', shopId);
   if (delError && delError.code !== 'PGRST116') throw delError;
   if (types.length === 0) return;
   const rows = types.map((pt, idx) => ({
     id: pt.id,
+    shop_id: shopId,
     name: pt.name,
     namear: pt.nameAr || pt.name,
     colorperpage: pt.colorPerPage,
@@ -68,11 +124,12 @@ export const replaceAllPaperTypes = async (types) => {
   if (error) throw error;
 };
 
-export const createPaperType = async (pt) => {
-  const { data: maxOrderData } = await supabase.from('paper_types').select('sortorder').order('sortorder', { ascending: false }).limit(1);
+export const createPaperType = async (shopId, pt) => {
+  const { data: maxOrderData } = await supabase.from('paper_types').select('sortorder').eq('shop_id', shopId).order('sortorder', { ascending: false }).limit(1);
   const maxOrder = maxOrderData?.[0]?.sortorder ?? -1;
   const newPt = {
     id: pt.id,
+    shop_id: shopId,
     name: pt.name,
     namear: pt.nameAr || pt.name,
     colorperpage: pt.colorPerPage,
@@ -81,11 +138,11 @@ export const createPaperType = async (pt) => {
   };
   const { error } = await supabase.from('paper_types').insert(newPt);
   if (error) throw error;
-  const { data } = await supabase.from('paper_types').select('*').eq('id', pt.id).single();
+  const { data } = await supabase.from('paper_types').select('*').eq('shop_id', shopId).eq('id', pt.id).single();
   return data;
 };
 
-export const updatePaperType = async (id, updates) => {
+export const updatePaperType = async (shopId, id, updates) => {
   const setFields = {};
   if (updates.name !== undefined) setFields.name = updates.name;
   if (updates.nameAr !== undefined) setFields.namear = updates.nameAr;
@@ -93,40 +150,42 @@ export const updatePaperType = async (id, updates) => {
   if (updates.blackWhitePerPage !== undefined) setFields.blackwhiteperpage = updates.blackWhitePerPage;
   if (updates.sortOrder !== undefined) setFields.sortorder = updates.sortOrder;
   if (Object.keys(setFields).length === 0) return null;
-  const { error } = await supabase.from('paper_types').update(setFields).eq('id', id);
+  const { error } = await supabase.from('paper_types').update(setFields).eq('shop_id', shopId).eq('id', id);
   if (error) throw error;
-  const { data } = await supabase.from('paper_types').select('*').eq('id', id).single();
+  const { data } = await supabase.from('paper_types').select('*').eq('shop_id', shopId).eq('id', id).single();
   return data;
 };
 
-export const deletePaperType = async (id) => {
-  const { error } = await supabase.from('paper_types').delete().eq('id', id);
+export const deletePaperType = async (shopId, id) => {
+  const { error } = await supabase.from('paper_types').delete().eq('shop_id', shopId).eq('id', id);
   if (error) throw error;
-  const { data: remaining } = await supabase.from('paper_types').select('id').order('sortorder', { ascending: true });
+  const { data: remaining } = await supabase.from('paper_types').select('id').eq('shop_id', shopId).order('sortorder', { ascending: true });
   for (let i = 0; i < (remaining || []).length; i++) {
-    await supabase.from('paper_types').update({ sortorder: i }).eq('id', remaining[i].id);
+    await supabase.from('paper_types').update({ sortorder: i }).eq('shop_id', shopId).eq('id', remaining[i].id);
   }
 };
 
 /**
  * Discount Rules Helpers
  */
-export const getDiscountRules = async () => {
-  const { data, error } = await supabase.from('discount_rules').select('*').order('priority', { ascending: false }).order('created_at', { ascending: false });
+export const getDiscountRules = async (shopId) => {
+  const { data, error } = await supabase.from('discount_rules').select('*').eq('shop_id', shopId).order('priority', { ascending: false }).order('created_at', { ascending: false });
   if (error) throw error;
   return (data || []).map(row => ({ ...row, is_active: Boolean(row.is_active) }));
 };
 
-export const getActiveDiscountRules = async () => {
-  const { data, error } = await supabase.from('discount_rules').select('*').eq('is_active', 1).order('priority', { ascending: false });
+export const getActiveDiscountRules = async (shopId) => {
+  const { data, error } = await supabase.from('discount_rules').select('*').eq('shop_id', shopId).eq('is_active', 1).order('priority', { ascending: false });
   if (error) throw error;
   return (data || []).map(row => ({ ...row, is_active: Boolean(row.is_active) }));
 };
 
-export const createDiscountRule = async (rule) => {
+export const createDiscountRule = async (shopId, rule) => {
   const { id, name, discount_type, discount_value, condition_type, threshold, max_discount_cap, priority, is_active } = rule;
   const { error } = await supabase.from('discount_rules').insert({
-    id, name, discount_type,
+    id,
+    shop_id: shopId,
+    name, discount_type,
     discount_value,
     condition_type,
     threshold,
@@ -139,7 +198,7 @@ export const createDiscountRule = async (rule) => {
   return rule;
 };
 
-export const updateDiscountRule = async (id, updates) => {
+export const updateDiscountRule = async (shopId, id, updates) => {
   const setFields = {};
   if (updates.name !== undefined) setFields.name = updates.name;
   if (updates.discount_type !== undefined) setFields.discount_type = updates.discount_type;
@@ -152,13 +211,13 @@ export const updateDiscountRule = async (id, updates) => {
 
   if (Object.keys(setFields).length === 0) return null;
 
-  const { error } = await supabase.from('discount_rules').update(setFields).eq('id', id);
+  const { error } = await supabase.from('discount_rules').update(setFields).eq('shop_id', shopId).eq('id', id);
   if (error) throw error;
   return { id, ...updates };
 };
 
-export const deleteDiscountRule = async (id) => {
-  const { error } = await supabase.from('discount_rules').delete().eq('id', id);
+export const deleteDiscountRule = async (shopId, id) => {
+  const { error } = await supabase.from('discount_rules').delete().eq('shop_id', shopId).eq('id', id);
   if (error) throw error;
   return id;
 };

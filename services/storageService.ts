@@ -35,7 +35,12 @@ class StorageService {
     }
   }
 
+  private myJobIdsKey(shopSlug: string): string {
+    return `my_upload_ids_${shopSlug}`;
+  }
+
   async saveJob(
+    shopSlug: string,
     job: PrintJob,
     file: File,
     onProgress?: (p: number) => void
@@ -46,7 +51,7 @@ class StorageService {
       formData.append("metadata", JSON.stringify(job));
 
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", "/api/upload", true);
+      xhr.open("POST", `/api/s/${shopSlug}/upload`, true);
       xhr.setRequestHeader("Accept", "application/json");
 
       if (onProgress) {
@@ -62,9 +67,9 @@ class StorageService {
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             const response = JSON.parse(xhr.responseText);
-            const myJobs = this.getMyJobIds();
+            const myJobs = this.getMyJobIds(shopSlug);
             myJobs.push(response.job.id);
-            localStorage.setItem("my_upload_ids", JSON.stringify(myJobs));
+            localStorage.setItem(this.myJobIdsKey(shopSlug), JSON.stringify(myJobs));
             resolve();
           } catch (e) {
             reject(new Error("Malformed response from server"));
@@ -79,20 +84,20 @@ class StorageService {
     });
   }
 
-  getMyJobIds(): string[] {
+  getMyJobIds(shopSlug: string): string[] {
     try {
-      const data = localStorage.getItem("my_upload_ids");
+      const data = localStorage.getItem(this.myJobIdsKey(shopSlug));
       return data ? JSON.parse(data) : [];
     } catch {
       return [];
     }
   }
 
-  async getMyRecentJobs(): Promise<Partial<PrintJob>[]> {
+  async getMyRecentJobs(shopSlug: string): Promise<Partial<PrintJob>[]> {
     try {
-      const myIds = this.getMyJobIds();
+      const myIds = this.getMyJobIds(shopSlug);
       if (myIds.length === 0) return [];
-      const data = await this.safeFetch("/api/orders/query", {
+      const data = await this.safeFetch(`/api/s/${shopSlug}/orders/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ids: myIds }),
@@ -103,23 +108,23 @@ class StorageService {
     }
   }
 
-  async getFileUrl(id: string): Promise<string | null> {
-    return `/api/files/public/${id}`;
+  async getFileUrl(shopSlug: string, id: string): Promise<string | null> {
+    return `/api/s/${shopSlug}/files/public/${id}`;
   }
 
-  async deleteJob(id: string): Promise<void> {
-    const myJobs = this.getMyJobIds();
-    await this.safeFetch(`/api/orders/${id}`, {
+  async deleteJob(shopSlug: string, id: string): Promise<void> {
+    const myJobs = this.getMyJobIds(shopSlug);
+    await this.safeFetch(`/api/s/${shopSlug}/orders/${id}`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ myIds: myJobs }),
     });
-    localStorage.setItem("my_upload_ids", JSON.stringify(myJobs.filter((mid) => mid !== id)));
+    localStorage.setItem(this.myJobIdsKey(shopSlug), JSON.stringify(myJobs.filter((mid) => mid !== id)));
   }
 
-  async getSettings(): Promise<ShopSettings> {
+  async getSettings(shopSlug: string): Promise<ShopSettings> {
     try {
-      const settings = await this.safeFetch("/api/settings");
+      const settings = await this.safeFetch(`/api/s/${shopSlug}/settings`);
       const pricing = settings?.pricing
         ? {
             colorPerPage: Number(settings.pricing.colorPerPage) || 30.0,
@@ -153,12 +158,12 @@ class StorageService {
     }
   }
 
-  async getPaperTypes(): Promise<import("../types").PaperType[]> {
-    return this.safeFetch("/api/paper-types");
+  async getPaperTypes(shopSlug: string): Promise<import("../types").PaperType[]> {
+    return this.safeFetch(`/api/s/${shopSlug}/paper-types`);
   }
 
-  async getActiveDiscountRules(): Promise<DiscountRule[]> {
-    return this.safeFetch("/api/discount-rules/active");
+  async getActiveDiscountRules(shopSlug: string): Promise<DiscountRule[]> {
+    return this.safeFetch(`/api/s/${shopSlug}/discount-rules/active`);
   }
 }
 

@@ -1,14 +1,50 @@
 import React, { useState, useEffect } from "react";
-import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import { Routes, Route, useParams } from "react-router-dom";
 import { Language, ShopSettings } from "./types";
 import { TRANSLATIONS } from "./constants";
 import { storageService } from "./services/storageService";
 import UploadView from "./views/UploadView";
 import LanguageToggle from "./components/LanguageToggle";
 
-const App: React.FC = () => {
-  const navigate = useNavigate();
+const NoShopSpecified: React.FC<{ isRtl: boolean }> = ({ isRtl }) => (
+  <div className="max-w-md mx-auto mt-16 text-center text-gray-500 dark:text-gray-400">
+    <p className="text-lg font-semibold">
+      {isRtl ? "لم يتم تحديد متجر" : "No shop specified"}
+    </p>
+    <p className="text-sm mt-2">
+      {isRtl
+        ? "استخدم رابط الرفع الخاص بالمتجر الذي حصلت عليه من صاحب المحل."
+        : "Use the shop's upload link you were given."}
+    </p>
+  </div>
+);
 
+const UploadRoute: React.FC<{ lang: Language; onSettingsLoaded: (s: ShopSettings) => void }> = ({ lang, onSettingsLoaded }) => {
+  const { shopSlug } = useParams<{ shopSlug: string }>();
+  const [settings, setSettings] = useState<ShopSettings | undefined>(undefined);
+
+  useEffect(() => {
+    if (!shopSlug) return;
+    (async () => {
+      try {
+        const serverSettings = await storageService.getSettings(shopSlug);
+        setSettings(serverSettings);
+        onSettingsLoaded(serverSettings);
+        document.title = serverSettings.shopName;
+      } catch (error) {
+        console.error("Failed to load settings:", error);
+      }
+    })();
+  }, [shopSlug]);
+
+  if (!shopSlug) {
+    return <NoShopSpecified isRtl={lang === "ar"} />;
+  }
+
+  return <UploadView lang={lang} shopSlug={shopSlug} shopSettings={settings} />;
+};
+
+const App: React.FC = () => {
   const [lang, setLang] = useState<Language>(() => {
     const savedLang = localStorage.getItem("ps_language") as Language;
     return savedLang || "ar";
@@ -35,38 +71,6 @@ const App: React.FC = () => {
     localStorage.setItem("ps_dark_mode", String(darkMode));
   }, [darkMode]);
 
-  useEffect(() => {
-    const loadSettings = async () => {
-      try {
-        const serverSettings = await storageService.getSettings();
-        setSettings(serverSettings);
-        document.title = serverSettings.shopName;
-      } catch (error) {
-        console.error("Failed to load settings:", error);
-      }
-    };
-    loadSettings();
-  }, []);
-
-  // Redirect / to /upload
-  useEffect(() => {
-    if (location.pathname === "/") {
-      navigate("/upload", { replace: true });
-    }
-  }, [navigate]);
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "u") {
-        e.preventDefault();
-        navigate("/upload");
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [navigate]);
-
   return (
     <div className="min-h-screen bg-[#F8FAFC] dark:bg-gray-950 flex flex-col antialiased font-sans selection:bg-indigo-100 dark:selection:bg-indigo-900/40 selection:text-indigo-900 dark:selection:text-indigo-200">
       <nav
@@ -74,7 +78,7 @@ const App: React.FC = () => {
         style={{ direction: "ltr", flexDirection: "row" }}
         className="bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-b border-gray-100/50 dark:border-gray-800/50 px-6 py-2.5 flex items-center justify-between sticky top-0 z-50 shadow-sm dark:shadow-gray-900/30"
       >
-        <div className="flex items-center gap-3 cursor-pointer" style={{ direction: "ltr" }} onClick={() => navigate("/upload")}>
+        <div className="flex items-center gap-3" style={{ direction: "ltr" }}>
           <div className="w-10 h-10 bg-indigo-600 rounded-lg flex items-center justify-center text-white overflow-hidden shadow-sm">
             {settings.logoUrl ? (
               <img src={settings.logoUrl} alt="Logo" className="w-full h-full object-contain" />
@@ -114,8 +118,8 @@ const App: React.FC = () => {
       <main className="flex-grow flex flex-col transition-opacity duration-150 container mx-auto py-6 px-4">
         <div key={lang} className="animate-[langFadeIn_0.25s_ease-out] flex-1 flex flex-col">
           <Routes>
-            <Route path="/upload" element={<UploadView lang={lang} shopSettings={settings} />} />
-            <Route path="*" element={<Navigate to="/upload" replace />} />
+            <Route path="/s/:shopSlug/upload" element={<UploadRoute lang={lang} onSettingsLoaded={setSettings} />} />
+            <Route path="*" element={<NoShopSpecified isRtl={lang === "ar"} />} />
           </Routes>
         </div>
       </main>

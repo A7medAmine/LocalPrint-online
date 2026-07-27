@@ -36,6 +36,7 @@ import PreviewModal from "../components/preview/PreviewModal";
 
 interface UploadViewProps {
   lang: Language;
+  shopSlug: string;
   shopSettings?: ShopSettings;
 }
 
@@ -51,7 +52,7 @@ const generateSafeId = () => {
   return Math.random().toString(36).substring(2, 11) + Date.now().toString(36);
 };
 
-const UploadView: React.FC<UploadViewProps> = ({ lang, shopSettings: propSettings }) => {
+const UploadView: React.FC<UploadViewProps> = ({ lang, shopSlug, shopSettings: propSettings }) => {
   const t = (key: string) => TRANSLATIONS[key][lang] || key;
   const isRtl = lang === "ar";
   // toast() imported from use-toast, called directly
@@ -111,9 +112,9 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSettings: propSetting
     (async () => {
       try {
         const [jobs, settings, rules] = await Promise.all([
-          storageService.getMyRecentJobs(),
-          propSettings ? Promise.resolve(propSettings) : storageService.getSettings(),
-          storageService.getActiveDiscountRules(),
+          storageService.getMyRecentJobs(shopSlug),
+          propSettings ? Promise.resolve(propSettings) : storageService.getSettings(shopSlug),
+          storageService.getActiveDiscountRules(shopSlug),
         ]);
         setRecentJobs(jobs);
         if (!propSettings) setShopSettings(settings);
@@ -122,7 +123,7 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSettings: propSetting
         console.error("Failed to load recent data", err);
       }
     })();
-  }, [overallSuccess]);
+  }, [overallSuccess, shopSlug]);
 
   // Compute page counts whenever recentJobs changes
   useEffect(() => {
@@ -143,7 +144,7 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSettings: propSetting
         if (counts[job.id] !== undefined) continue;
         if (isOfficeType(job.fileType)) continue;
         try {
-          const url = await storageService.getFileUrl(job.id);
+          const url = await storageService.getFileUrl(shopSlug, job.id);
           if (!url) { counts[job.id] = 1; continue; }
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), 8000);
@@ -184,7 +185,7 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSettings: propSetting
   const confirmCancelJob = async () => {
     if (cancelConfirm.jobId) {
       try {
-        await storageService.deleteJob(cancelConfirm.jobId);
+        await storageService.deleteJob(shopSlug, cancelConfirm.jobId);
         setRecentJobs((prev) => prev.filter((job) => job.id !== cancelConfirm.jobId));
         toast({ title: isRtl ? "تم إلغاء الطباعة بنجاح" : "Print job cancelled successfully", variant: "success" });
       } catch (err) {
@@ -257,7 +258,7 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSettings: propSetting
 
   const handlePreviewJob = async (job: PrintJob) => {
     try {
-      const url = await storageService.getFileUrl(job.id);
+      const url = await storageService.getFileUrl(shopSlug, job.id);
       if (url) setPreviewJob({ job, url });
     } catch (err) {
       console.error("Failed to fetch preview", err);
@@ -329,7 +330,7 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSettings: propSetting
     );
 
     try {
-      await storageService.saveJob(job, fileStatus.file, (progress) => {
+      await storageService.saveJob(shopSlug, job, fileStatus.file, (progress) => {
         setSelectedFiles((prev) =>
           prev.map((f) => (f.id === fileStatus.id ? { ...f, progress } : f)),
         );
