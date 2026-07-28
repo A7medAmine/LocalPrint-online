@@ -92,6 +92,30 @@ export interface DiscountResult {
   savingsPercentage: number;
 }
 
+export interface AccountProfile {
+  id: string;
+  name: string | null;
+  phone: string | null;
+  email: string | null;
+  defaultPaperTypeId: string | null;
+  defaultCopies: number | null;
+}
+
+export interface AccountOrder {
+  id: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  uploadDate: string;
+  status: string;
+  pageCount?: number;
+  colorMode: string;
+  copies: number;
+  paperType: string;
+  shopName: string | null;
+  shopSlug: string | null;
+}
+
 export interface GmailAttachmentMeta {
   filename: string;
   mimeType: string;

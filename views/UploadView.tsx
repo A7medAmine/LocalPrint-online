@@ -9,6 +9,7 @@ import {
   calculateJobDiscount,
 } from "../utils/pricingUtils";
 import { toast } from "../components/ui/use-toast";
+import { useAuth } from "../hooks/useAuth";
 import { Toaster } from "../components/ui/toaster";
 import {
   AlertDialog,
@@ -56,6 +57,11 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSlug, shopSettings: p
   const t = (key: string) => TRANSLATIONS[key][lang] || key;
   const isRtl = lang === "ar";
   // toast() imported from use-toast, called directly
+
+  // Optional customer account — guest upload works identically whether or not
+  // this resolves to a logged-in user.
+  const { user, accessToken } = useAuth();
+  const appliedProfileDefaults = useRef(false);
 
   // Confirm dialog state for canceling jobs
   const [cancelConfirm, setCancelConfirm] = useState<{
@@ -124,6 +130,32 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSlug, shopSettings: p
       }
     })();
   }, [overallSuccess, shopSlug]);
+
+  // Logged-in customers: auto-fill name/phone and apply saved defaults once.
+  // Never blocks or alters the guest flow — runs only when a session exists.
+  useEffect(() => {
+    if (!user || !accessToken || appliedProfileDefaults.current) return;
+    (async () => {
+      try {
+        const profile = await storageService.getAccountProfile(accessToken);
+        appliedProfileDefaults.current = true;
+        setFormData((prev) => ({
+          ...prev,
+          name: prev.name || profile.name || "",
+          phone: prev.phone || profile.phone || "",
+        }));
+        if (profile.defaultPaperTypeId || profile.defaultCopies) {
+          setPrintPreferences((prev) => ({
+            ...prev,
+            paperType: profile.defaultPaperTypeId || prev.paperType,
+            copies: profile.defaultCopies || prev.copies,
+          }));
+        }
+      } catch (err) {
+        console.error("Failed to load account profile", err);
+      }
+    })();
+  }, [user, accessToken]);
 
   // Compute page counts whenever recentJobs changes
   useEffect(() => {
@@ -334,7 +366,7 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSlug, shopSettings: p
         setSelectedFiles((prev) =>
           prev.map((f) => (f.id === fileStatus.id ? { ...f, progress } : f)),
         );
-      });
+      }, accessToken);
       setSelectedFiles((prev) =>
         prev.map((f) =>
           f.id === fileStatus.id

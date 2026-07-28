@@ -73,6 +73,81 @@ export const createShop = async (name) => {
 };
 
 /**
+ * Customer Account Helpers (optional — guest uploads never touch these)
+ */
+export const getSupabaseUserFromToken = async (token) => {
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data?.user) return null;
+  return data.user;
+};
+
+const toCamelProfile = (row) => ({
+  id: row.id,
+  name: row.name,
+  phone: row.phone,
+  email: row.email,
+  defaultPaperTypeId: row.default_paper_type_id,
+  defaultCopies: row.default_copies,
+});
+
+export const getProfile = async (userId) => {
+  const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single();
+  if (error) {
+    if (error.code === 'PGRST116') return null;
+    throw error;
+  }
+  return data;
+};
+
+export const getProfileCamel = async (userId) => {
+  const profile = await getProfile(userId);
+  return profile ? toCamelProfile(profile) : null;
+};
+
+export const upsertProfile = async (userId, fields) => {
+  const { error } = await supabase.from('profiles').upsert({ id: userId, ...fields }, { onConflict: 'id' });
+  if (error) throw error;
+  return getProfileCamel(userId);
+};
+
+// Customer's orders across all shops, newest first, with shop name/slug attached.
+// No FK relationship is declared between orders.shop_id and shops.id, so this
+// can't use PostgREST embedding — fetch orders then batch-lookup shops in JS,
+// matching the rest of this file's style.
+export const getCustomerOrders = async (userId) => {
+  const { data: orders, error } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('user_id', userId)
+    .order('uploaddate', { ascending: false });
+  if (error) throw error;
+  if (!orders || orders.length === 0) return [];
+
+  const shopIds = [...new Set(orders.map(o => o.shop_id))];
+  const { data: shops, error: shopsErr } = await supabase
+    .from('shops')
+    .select('id, name, slug')
+    .in('id', shopIds);
+  if (shopsErr) throw shopsErr;
+  const shopById = Object.fromEntries((shops || []).map(s => [s.id, s]));
+
+  return orders.map(order => ({
+    id: order.id,
+    fileName: order.filename,
+    fileType: order.filetype,
+    fileSize: order.filesize,
+    uploadDate: order.uploaddate,
+    status: order.status,
+    pageCount: order.pagecount,
+    colorMode: order.colormode,
+    copies: order.copies,
+    paperType: order.papertype,
+    shopName: shopById[order.shop_id]?.name || null,
+    shopSlug: shopById[order.shop_id]?.slug || null,
+  }));
+};
+
+/**
  * Settings Helpers
  */
 export const getSettings = async (shopId) => {

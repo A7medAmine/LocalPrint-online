@@ -17,6 +17,11 @@ import supabase, {
   hashToken,
   getShopBySlug,
   getShopByTokenHash,
+  getSupabaseUserFromToken,
+  getProfile,
+  getProfileCamel,
+  upsertProfile,
+  getCustomerOrders,
 } from './db.js';
 
 // ── Magic byte signatures for file validation ──
@@ -71,6 +76,43 @@ async function resolveShopBySlug(req, res, next) {
     next();
   } catch (err) {
     console.error('❌ Shop slug lookup error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── Optional customer auth — attaches req.userId if a valid Supabase JWT is
+// present, but never rejects the request. Guest requests (no/invalid token)
+// pass through untouched. ──
+async function optionalCustomerAuth(req, res, next) {
+  const auth = req.headers.authorization;
+  if (auth && auth.startsWith('Bearer ')) {
+    try {
+      const user = await getSupabaseUserFromToken(auth.slice(7));
+      if (user) req.userId = user.id;
+    } catch (err) {
+      console.error('❌ optionalCustomerAuth error:', err.message);
+    }
+  }
+  next();
+}
+
+// ── Strict customer auth — for account-only endpoints. Rejects with 401 if
+// there's no valid customer JWT. ──
+async function requireCustomerAuth(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const user = await getSupabaseUserFromToken(auth.slice(7));
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    req.userId = user.id;
+    req.userEmail = user.email;
+    next();
+  } catch (err) {
+    console.error('❌ requireCustomerAuth error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }
@@ -244,8 +286,9 @@ app.get("/api/health", (req, res) => {
   res.status(200).json({ status: "ok", environment: NODE_ENV, timestamp: new Date().toISOString() });
 });
 
-// Public upload endpoint (rate-limited)
-app.post("/api/s/:shopSlug/upload", rateLimit, resolveShopBySlug, upload.single("file"), async (req, res) => {
+// Public upload endpoint (rate-limited). optionalCustomerAuth never rejects —
+// guest uploads (no/invalid token) behave exactly as before.
+app.post("/api/s/:shopSlug/upload", rateLimit, resolveShopBySlug, optionalCustomerAuth, upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, error: "No file uploaded" });
@@ -264,11 +307,18 @@ app.post("/api/s/:shopSlug/upload", rateLimit, resolveShopBySlug, upload.single(
       pageCount = await getPdfPageCount(filePath);
     }
 
+    // Logged-in customers can omit name/phone and fall back to their saved profile.
+    let profile = null;
+    if (req.userId) {
+      profile = await getProfile(req.userId);
+    }
+
     const newOrder = {
       id: metadata.id,
       shop_id: req.shop.id,
-      customername: metadata.customerName || '',
-      phonenumber: metadata.phoneNumber || '',
+      user_id: req.userId || null,
+      customername: metadata.customerName || profile?.name || '',
+      phonenumber: metadata.phoneNumber || profile?.phone || '',
       notes: metadata.notes || '',
       filename: metadata.fileName || req.file.originalname,
       filetype: req.file.mimetype,
@@ -439,6 +489,55 @@ app.get("/api/s/:shopSlug/discount-rules/active", resolveShopBySlug, async (req,
   } catch (err) {
     console.error("❌ Error fetching active discount rules:", err);
     res.status(500).json({ error: "Failed to fetch active discount rules" });
+  }
+});
+
+/**
+ * CUSTOMER ACCOUNT API (authenticated with a Supabase customer JWT — global,
+ * not shop-scoped: one account works across every shop on the platform)
+ */
+
+// Get the logged-in customer's profile (lazily created on first access)
+app.get("/api/account/profile", requireCustomerAuth, async (req, res) => {
+  try {
+    let profile = await getProfileCamel(req.userId);
+    if (!profile) {
+      profile = await upsertProfile(req.userId, { email: req.userEmail || null });
+    }
+    res.status(200).json(profile);
+  } catch (err) {
+    console.error("❌ Error fetching profile:", err);
+    res.status(500).json({ error: "Failed to fetch profile" });
+  }
+});
+
+// Update the logged-in customer's profile
+app.put("/api/account/profile", requireCustomerAuth, async (req, res) => {
+  try {
+    const { name, phone, email, defaultPaperTypeId, defaultCopies } = req.body;
+    const fields = {};
+    if (name !== undefined) fields.name = name;
+    if (phone !== undefined) fields.phone = phone;
+    if (email !== undefined) fields.email = email;
+    if (defaultPaperTypeId !== undefined) fields.default_paper_type_id = defaultPaperTypeId;
+    if (defaultCopies !== undefined) fields.default_copies = defaultCopies;
+
+    const profile = await upsertProfile(req.userId, fields);
+    res.status(200).json(profile);
+  } catch (err) {
+    console.error("❌ Error updating profile:", err);
+    res.status(500).json({ error: "Failed to update profile" });
+  }
+});
+
+// Get the logged-in customer's orders across all shops
+app.get("/api/account/orders", requireCustomerAuth, async (req, res) => {
+  try {
+    const orders = await getCustomerOrders(req.userId);
+    res.status(200).json(orders);
+  } catch (err) {
+    console.error("❌ Error fetching customer orders:", err);
+    res.status(500).json({ error: "Failed to fetch orders" });
   }
 });
 

@@ -1,4 +1,4 @@
-import { PrintJob, ShopSettings, DiscountRule } from "../types";
+import { PrintJob, ShopSettings, DiscountRule, AccountProfile, AccountOrder } from "../types";
 
 class StorageService {
   private async safeFetch(url: string, options?: RequestInit) {
@@ -43,7 +43,8 @@ class StorageService {
     shopSlug: string,
     job: PrintJob,
     file: File,
-    onProgress?: (p: number) => void
+    onProgress?: (p: number) => void,
+    accessToken?: string | null,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const formData = new FormData();
@@ -53,6 +54,9 @@ class StorageService {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `/api/s/${shopSlug}/upload`, true);
       xhr.setRequestHeader("Accept", "application/json");
+      if (accessToken) {
+        xhr.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+      }
 
       if (onProgress) {
         xhr.upload.onprogress = (e) => {
@@ -164,6 +168,29 @@ class StorageService {
 
   async getActiveDiscountRules(shopSlug: string): Promise<DiscountRule[]> {
     return this.safeFetch(`/api/s/${shopSlug}/discount-rules/active`);
+  }
+
+  // ── Customer account (optional — requires a Supabase access token) ──
+
+  async getAccountProfile(accessToken: string): Promise<AccountProfile> {
+    return this.safeFetch("/api/account/profile", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  async updateAccountProfile(accessToken: string, fields: Partial<AccountProfile>): Promise<AccountProfile> {
+    return this.safeFetch("/api/account/profile", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(fields),
+    });
+  }
+
+  async getAccountOrders(accessToken: string): Promise<AccountOrder[]> {
+    const data = await this.safeFetch("/api/account/orders", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    return Array.isArray(data) ? data : [];
   }
 }
 

@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from "react";
-import { Routes, Route, useParams } from "react-router-dom";
+import { Routes, Route, useParams, Link } from "react-router-dom";
 import { Language, ShopSettings } from "./types";
 import { TRANSLATIONS } from "./constants";
 import { storageService } from "./services/storageService";
 import UploadView from "./views/UploadView";
+import AccountView from "./views/AccountView";
 import LanguageToggle from "./components/LanguageToggle";
+import { useAuth } from "./hooks/useAuth";
+import { isCustomerAuthConfigured } from "./services/supabaseClient";
 
 const NoShopSpecified: React.FC<{ isRtl: boolean }> = ({ isRtl }) => (
   <div className="max-w-md mx-auto mt-16 text-center text-gray-500 dark:text-gray-400">
@@ -45,6 +48,7 @@ const UploadRoute: React.FC<{ lang: Language; onSettingsLoaded: (s: ShopSettings
 };
 
 const App: React.FC = () => {
+  const { user } = useAuth();
   const [lang, setLang] = useState<Language>(() => {
     const savedLang = localStorage.getItem("ps_language") as Language;
     return savedLang || "ar";
@@ -112,6 +116,18 @@ const App: React.FC = () => {
             )}
           </button>
           <LanguageToggle currentLang={lang} onToggle={setLang} />
+          {isCustomerAuthConfigured && (
+            <Link
+              to="/account"
+              className="p-2 rounded-xl text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-800 transition-all active:scale-95"
+              aria-label={lang === "ar" ? "حسابي" : "My account"}
+              title={user?.email || (lang === "ar" ? "تسجيل الدخول" : "Sign in")}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+            </Link>
+          )}
         </div>
       </nav>
 
@@ -119,6 +135,7 @@ const App: React.FC = () => {
         <div key={lang} className="animate-[langFadeIn_0.25s_ease-out] flex-1 flex flex-col">
           <Routes>
             <Route path="/s/:shopSlug/upload" element={<UploadRoute lang={lang} onSettingsLoaded={setSettings} />} />
+            <Route path="/account" element={<AccountView lang={lang} />} />
             <Route path="*" element={<NoShopSpecified isRtl={lang === "ar"} />} />
           </Routes>
         </div>
