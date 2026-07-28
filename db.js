@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { createRemoteJWKSet, jwtVerify, errors as joseErrors } from 'jose';
 import { WebSocket } from 'ws';
 import { randomBytes, randomUUID, createHash } from 'crypto';
 
@@ -75,19 +76,131 @@ export const createShop = async (name) => {
 /**
  * Customer Account Helpers (optional — guest uploads never touch these)
  */
-export const getSupabaseUserFromToken = async (token) => {
+// Raised when we cannot *determine* whether a token is valid — Supabase Auth
+// unreachable, JWKS fetch failed, etc. Distinct from a token we successfully
+// verified and rejected: callers must answer 503, never 401, on this.
+export class AuthUnavailableError extends Error {
+  constructor(message, { cause } = {}) {
+    super(message, { cause });
+    this.name = 'AuthUnavailableError';
+  }
+}
+
+const AUTH_TIMEOUT_MS = 5000;
+
+// Supabase signs customer JWTs with asymmetric keys (ES256) published at the
+// project's JWKS endpoint. Verifying locally means an authenticated request
+// costs zero network round-trips: jose caches the key set in memory and only
+// refetches when it sees an unknown `kid` (i.e. after a key rotation).
+const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`), {
+  timeoutDuration: AUTH_TIMEOUT_MS,
+  cooldownDuration: 30_000,
+  cacheMaxAge: 10 * 60_000,
+});
+
+// Short-lived memo so bursts of requests carrying the same token (page load
+// firing profile + orders together) don't re-verify repeatedly.
+const tokenCache = new Map();
+const TOKEN_CACHE_TTL_MS = 60_000;
+
+const cacheGet = (token) => {
+  const hit = tokenCache.get(token);
+  if (!hit) return undefined;
+  if (hit.expiresAt <= Date.now()) {
+    tokenCache.delete(token);
+    return undefined;
+  }
+  return hit.user;
+};
+
+const cacheSet = (token, user, claimExpSeconds) => {
+  // Never outlive the token itself.
+  const ttl = claimExpSeconds
+    ? Math.min(TOKEN_CACHE_TTL_MS, claimExpSeconds * 1000 - Date.now())
+    : TOKEN_CACHE_TTL_MS;
+  if (ttl <= 0) return;
+  if (tokenCache.size > 1000) tokenCache.clear();
+  tokenCache.set(token, { user, expiresAt: Date.now() + ttl });
+};
+
+// Remote fallback, used only when local verification can't reach a verdict
+// (e.g. a legacy HS256 project whose JWKS has no usable key).
+//
+// This deliberately calls the REST endpoint directly instead of
+// supabase.auth.getUser(): auth-js has no timeout option, so a hung call runs
+// to undici's 10s connect timeout, and its internal promise chain leaks the
+// rejection to the console even when the caller has handled it. A plain fetch
+// with AbortSignal actually tears the socket down and stays quiet.
+const getUserRemote = async (token) => {
+  let res;
   try {
-    // Bound this — Supabase Auth being slow/unreachable shouldn't hang the
-    // request for undici's full 10s default connect timeout.
-    const { data, error } = await Promise.race([
-      supabase.auth.getUser(token),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Supabase auth check timed out')), 5000)),
-    ]);
-    if (error || !data?.user) return null;
-    return data.user;
+    res = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: { Authorization: `Bearer ${token}`, apikey: supabaseKey },
+      signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+    });
   } catch (err) {
-    console.error('❌ getSupabaseUserFromToken error:', err.message);
-    return null;
+    throw new AuthUnavailableError(`Supabase auth unreachable: ${err.message}`, { cause: err });
+  }
+
+  // 401/403 is a real verdict: the token is bad.
+  if (res.status === 401 || res.status === 403) return null;
+  // Anything else non-OK is Supabase failing, not the token being invalid.
+  if (!res.ok) {
+    throw new AuthUnavailableError(`Supabase auth returned ${res.status}`);
+  }
+
+  try {
+    const user = await res.json();
+    return user?.id ? user : null;
+  } catch (err) {
+    throw new AuthUnavailableError('Supabase auth returned malformed JSON', { cause: err });
+  }
+};
+
+/**
+ * Resolve a Supabase access token to a user.
+ *
+ * @returns the user, or `null` if the token is genuinely invalid/expired.
+ * @throws {AuthUnavailableError} if validity could not be determined.
+ */
+export const getSupabaseUserFromToken = async (token) => {
+  if (!token) return null;
+
+  const cached = cacheGet(token);
+  if (cached !== undefined) return cached;
+
+  try {
+    const { payload } = await jwtVerify(token, JWKS, {
+      issuer: `${supabaseUrl}/auth/v1`,
+      audience: 'authenticated',
+    });
+    const user = {
+      id: payload.sub,
+      email: payload.email,
+      role: payload.role,
+      app_metadata: payload.app_metadata,
+      user_metadata: payload.user_metadata,
+    };
+    cacheSet(token, user, payload.exp);
+    return user;
+  } catch (err) {
+    // A token we successfully evaluated and rejected — expired, bad signature,
+    // wrong audience. This is a real 401.
+    if (
+      err instanceof joseErrors.JWTExpired ||
+      err instanceof joseErrors.JWTClaimValidationFailed ||
+      err instanceof joseErrors.JWSSignatureVerificationFailed ||
+      err instanceof joseErrors.JWSInvalid ||
+      err instanceof joseErrors.JWTInvalid
+    ) {
+      return null;
+    }
+    // Couldn't fetch/parse the key set, or the token is signed with a key this
+    // endpoint doesn't publish (legacy HS256 projects) — ask Supabase directly.
+    console.warn('⚠️  Local JWT verification inconclusive, falling back to Supabase:', err.message);
+    const user = await getUserRemote(token);
+    if (user) cacheSet(token, user);
+    return user;
   }
 };
 

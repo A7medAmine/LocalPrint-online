@@ -18,6 +18,7 @@ import supabase, {
   getShopBySlug,
   getShopByTokenHash,
   getSupabaseUserFromToken,
+  AuthUnavailableError,
   getProfile,
   getProfileCamel,
   upsertProfile,
@@ -90,6 +91,14 @@ async function optionalCustomerAuth(req, res, next) {
       const user = await getSupabaseUserFromToken(auth.slice(7));
       if (user) req.userId = user.id;
     } catch (err) {
+      if (err instanceof AuthUnavailableError) {
+        // The caller *is* signed in — we just can't confirm who they are.
+        // Proceeding would silently file their order as a guest upload and
+        // orphan it from their account, so fail loudly and let them retry.
+        console.error('❌ optionalCustomerAuth unavailable:', err.message);
+        res.set('Retry-After', '5');
+        return res.status(503).json({ error: 'Authentication temporarily unavailable' });
+      }
       console.error('❌ optionalCustomerAuth error:', err.message);
     }
   }
@@ -112,6 +121,13 @@ async function requireCustomerAuth(req, res, next) {
     req.userEmail = user.email;
     next();
   } catch (err) {
+    if (err instanceof AuthUnavailableError) {
+      // Not the client's fault and the token may well be valid — a 401 here
+      // would read as "logged out" and throw away a good session.
+      console.error('❌ requireCustomerAuth unavailable:', err.message);
+      res.set('Retry-After', '5');
+      return res.status(503).json({ error: 'Authentication temporarily unavailable' });
+    }
     console.error('❌ requireCustomerAuth error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }

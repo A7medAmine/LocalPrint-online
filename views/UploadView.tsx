@@ -1089,7 +1089,7 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSlug, shopSettings: p
                   </div>
                   <div
                     className={`w-7 h-7 sm:w-10 sm:h-10 rounded-full flex items-center justify-center shrink-0 ${job.status === PrintStatus.PRINTED
-                      ? "bg-green-100 text-green-600 dark:text-green-400"
+                      ? "bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400"
                       : "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-400"
                       }`}
                   >
@@ -1205,7 +1205,7 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSlug, shopSettings: p
                     })()}
                     <span
                       className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${job.status === PrintStatus.PRINTED
-                        ? "bg-green-100 text-green-700 dark:text-green-400"
+                        ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400"
                         : "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400"
                         }`}
                     >
