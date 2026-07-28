@@ -131,6 +131,26 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSlug, shopSettings: p
     })();
   }, [overallSuccess, shopSlug]);
 
+  // Live status updates via SSE — cloud pushes { orderId, status } whenever
+  // the local shop app calls /api/shop/status for one of our orders.
+  useEffect(() => {
+    if (recentJobs.length === 0) return;
+    const ids = recentJobs.map((j) => j.id).filter(Boolean).join(",");
+    if (!ids) return;
+    const es = new EventSource(`/api/s/${shopSlug}/orders/stream?ids=${encodeURIComponent(ids)}`);
+    es.addEventListener("status-change", (e) => {
+      try {
+        const data = JSON.parse((e as MessageEvent).data);
+        const nextStatus = String(data.status || "").toUpperCase();
+        setRecentJobs((prev) =>
+          prev.map((j) => (j.id === data.orderId ? { ...j, status: nextStatus as PrintStatus } : j)),
+        );
+      } catch {}
+    });
+    es.onerror = () => { /* browser auto-reconnects */ };
+    return () => es.close();
+  }, [recentJobs.map((j) => j.id).join(","), shopSlug]);
+
   // Logged-in customers: auto-fill name/phone and apply saved defaults once.
   // Never blocks or alters the guest flow — runs only when a session exists.
   useEffect(() => {
@@ -338,7 +358,13 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSlug, shopSettings: p
     phone: string,
     notes: string,
   ) => {
-    const job: PrintJob = {
+    // Include the price the customer just saw (with discounts applied) so the
+    // server can persist it on the order — later reads don't need to refetch
+    // shop settings just to recompute the same number.
+    const priceInfo = getFilePriceWithDiscount(fileStatus.file, fileStatus.id);
+    const quotedPrice = priceInfo ? priceInfo.final : null;
+
+    const job: PrintJob & { quotedPrice?: number | null } = {
       id: generateSafeId(),
       customerName: name.trim(),
       phoneNumber: phone.trim(),
@@ -353,6 +379,7 @@ const UploadView: React.FC<UploadViewProps> = ({ lang, shopSlug, shopSettings: p
         copies: printPreferences.copies,
         paperType: printPreferences.paperType,
       },
+      quotedPrice,
     };
 
     setSelectedFiles((prev) =>

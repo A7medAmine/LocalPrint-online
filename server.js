@@ -286,6 +286,73 @@ app.get("/api/health", (req, res) => {
   res.status(200).json({ status: "ok", environment: NODE_ENV, timestamp: new Date().toISOString() });
 });
 
+// ── SSE subscribers, keyed by orderId ──
+// When /api/shop/status updates an order, we push a live event to any open
+// customer streams watching that orderId — no polling.
+const statusSubscribers = new Map(); // orderId -> Set<res>
+
+function subscribeToOrder(orderId, res) {
+  if (!statusSubscribers.has(orderId)) statusSubscribers.set(orderId, new Set());
+  statusSubscribers.get(orderId).add(res);
+}
+
+function unsubscribeFromOrder(orderId, res) {
+  const set = statusSubscribers.get(orderId);
+  if (!set) return;
+  set.delete(res);
+  if (set.size === 0) statusSubscribers.delete(orderId);
+}
+
+function broadcastStatusChange(orderId, status) {
+  const set = statusSubscribers.get(orderId);
+  if (!set) return;
+  const payload = `event: status-change\ndata: ${JSON.stringify({ orderId, status })}\n\n`;
+  for (const res of set) {
+    try { res.write(payload); } catch { /* client gone; will be cleaned up on 'close' */ }
+  }
+}
+
+// Customer-facing SSE stream for live order status updates.
+// The client passes ?ids=id1,id2,... — same allowlist idea as /orders/query.
+app.get("/api/s/:shopSlug/orders/stream", resolveShopBySlug, async (req, res) => {
+  const raw = String(req.query.ids || "").trim();
+  const requestedIds = raw ? raw.split(",").map(s => s.trim()).filter(Boolean) : [];
+  if (requestedIds.length === 0) {
+    return res.status(400).json({ error: "ids query parameter is required" });
+  }
+
+  // Only subscribe to ids that actually belong to this shop.
+  const { data: rows, error } = await supabase
+    .from('orders')
+    .select('id')
+    .eq('shop_id', req.shop.id)
+    .in('id', requestedIds);
+  if (error) return res.status(500).json({ error: error.message });
+  const validIds = (rows || []).map(r => r.id);
+  if (validIds.length === 0) {
+    return res.status(404).json({ error: "No matching orders" });
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  // Bypass the app-wide X-Frame-Options: DENY so this works if ever embedded.
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+  res.write(`: connected ${validIds.length}\n\n`);
+
+  for (const id of validIds) subscribeToOrder(id, res);
+
+  const keepalive = setInterval(() => {
+    try { res.write(": keepalive\n\n"); } catch {}
+  }, 25_000);
+
+  req.on("close", () => {
+    clearInterval(keepalive);
+    for (const id of validIds) unsubscribeFromOrder(id, res);
+  });
+});
+
 // Public upload endpoint (rate-limited). optionalCustomerAuth never rejects —
 // guest uploads (no/invalid token) behave exactly as before.
 app.post("/api/s/:shopSlug/upload", rateLimit, resolveShopBySlug, optionalCustomerAuth, upload.single("file"), async (req, res) => {
@@ -313,6 +380,14 @@ app.post("/api/s/:shopSlug/upload", rateLimit, resolveShopBySlug, optionalCustom
       profile = await getProfile(req.userId);
     }
 
+    // Customer-quoted price (may include discounts) sent by the client.
+    // Stored so past-uploads views don't have to refetch shop settings just
+    // to recompute the number the customer already saw.
+    const quotedPrice =
+      typeof metadata.quotedPrice === 'number' && Number.isFinite(metadata.quotedPrice) && metadata.quotedPrice >= 0
+        ? metadata.quotedPrice
+        : null;
+
     const newOrder = {
       id: metadata.id,
       shop_id: req.shop.id,
@@ -330,6 +405,7 @@ app.post("/api/s/:shopSlug/upload", rateLimit, resolveShopBySlug, optionalCustom
       colormode: metadata.printPreferences?.colorMode || 'color',
       copies: metadata.printPreferences?.copies || 1,
       papertype: metadata.printPreferences?.paperType || 'normal',
+      total_price: quotedPrice,
       source: 'upload',
       shopsyncstatus: 'pending',
     };
@@ -389,11 +465,13 @@ app.post("/api/s/:shopSlug/orders/query", resolveShopBySlug, async (req, res) =>
     colorMode: order.colormode,
     copies: order.copies,
     source: order.source,
+    totalPrice: order.total_price,
     printPreferences: {
       colorMode: order.colormode,
       copies: order.copies,
       paperType: order.papertype || 'normal'
     },
+    ...(order.status === 'rejected' ? { rejectionReason: order.rejection_reason } : {}),
   }));
   res.status(200).json(sanitized);
 });
@@ -606,7 +684,43 @@ app.post("/api/shop/ack", requireShopToken, async (req, res) => {
   res.status(200).json({ success: true, claimed: orderIds.length });
 });
 
-// Update order status (e.g., "PRINTED") — pushed from shop
+// Reject a fetched-but-unclaimed order (shop reviewed it and declined it).
+// Same resolving effect as ack — the order stops showing up in /api/shop/pending.
+app.post("/api/shop/reject", requireShopToken, async (req, res) => {
+  const { orderId, reason, note } = req.body;
+  if (!orderId || !reason) {
+    return res.status(400).json({ error: "orderId and reason are required" });
+  }
+
+  const { data: order, error: fetchErr } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('shop_id', req.shop.id)
+    .eq('id', orderId)
+    .single();
+  if (fetchErr || !order) return res.status(404).json({ error: "Order not found" });
+
+  const rejectionReason = note ? `${reason}: ${note}` : reason;
+
+  const { error } = await supabase
+    .from('orders')
+    .update({ status: 'rejected', rejection_reason: rejectionReason, shopsyncstatus: 'claimed' })
+    .eq('shop_id', req.shop.id)
+    .eq('id', orderId);
+  if (error) return res.status(500).json({ error: error.message });
+
+  if (order.serverfilename) {
+    const filePath = path.join(UPLOADS_DIR, order.serverfilename);
+    try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch (e) { console.warn("⚠️  Could not delete rejected order's file"); }
+  }
+
+  broadcastStatusChange(orderId, 'rejected');
+  res.status(200).json({ success: true });
+});
+
+// Update order status (e.g., "PRINTED") — pushed from shop.
+// After updating the DB, push a live SSE event to any customer streams
+// watching that order so their page reflects the change without a reload.
 app.post("/api/shop/status", requireShopToken, async (req, res) => {
   const { orderId, status } = req.body;
   if (!orderId || !status) {
@@ -614,6 +728,7 @@ app.post("/api/shop/status", requireShopToken, async (req, res) => {
   }
   const { error } = await supabase.from('orders').update({ status }).eq('shop_id', req.shop.id).eq('id', orderId);
   if (error) return res.status(500).json({ error: error.message });
+  broadcastStatusChange(orderId, status);
   res.status(200).json({ success: true });
 });
 
@@ -651,6 +766,9 @@ app.post("/api/shop/settings-sync", requireShopToken, async (req, res) => {
     }
     if (pricing?.logoUrl) {
       await updateSetting(shopId, 'logoUrl', pricing.logoUrl);
+    }
+    if (typeof pricing?.autoAcceptCloudJobs === 'boolean') {
+      await updateSetting(shopId, 'autoAcceptCloudJobs', pricing.autoAcceptCloudJobs);
     }
 
     if (Array.isArray(paperTypes)) {

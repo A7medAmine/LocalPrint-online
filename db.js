@@ -76,9 +76,19 @@ export const createShop = async (name) => {
  * Customer Account Helpers (optional — guest uploads never touch these)
  */
 export const getSupabaseUserFromToken = async (token) => {
-  const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data?.user) return null;
-  return data.user;
+  try {
+    // Bound this — Supabase Auth being slow/unreachable shouldn't hang the
+    // request for undici's full 10s default connect timeout.
+    const { data, error } = await Promise.race([
+      supabase.auth.getUser(token),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Supabase auth check timed out')), 5000)),
+    ]);
+    if (error || !data?.user) return null;
+    return data.user;
+  } catch (err) {
+    console.error('❌ getSupabaseUserFromToken error:', err.message);
+    return null;
+  }
 };
 
 const toCamelProfile = (row) => ({
@@ -142,6 +152,7 @@ export const getCustomerOrders = async (userId) => {
     colorMode: order.colormode,
     copies: order.copies,
     paperType: order.papertype,
+    totalPrice: order.total_price,
     shopName: shopById[order.shop_id]?.name || null,
     shopSlug: shopById[order.shop_id]?.slug || null,
   }));

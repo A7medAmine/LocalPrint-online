@@ -112,6 +112,7 @@ export interface AccountOrder {
   colorMode: string;
   copies: number;
   paperType: string;
+  totalPrice: number | null;
   shopName: string | null;
   shopSlug: string | null;
 }
